@@ -6,9 +6,11 @@ import {
     CircuitBreakerParameters,
     DeploymentSnapshot,
     RecordedMarket,
-    PriceFeedRecord
+    PriceFeedRecord,
+    TrailingAnchorPriceFeedSpec
 } from "../../script/deployment/DeploymentTypes.sol";
 import {RecordedDeployment} from "../../script/deployment/RecordedDeployment.sol";
+import {TrailingAnchorPriceFeed} from "../../script/deployment/TrailingAnchorPriceFeed.sol";
 
 import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
@@ -238,6 +240,7 @@ abstract contract AcceptanceContext is Test {
     bytes32 internal constant RECOVERER_ROLE = keccak256("RECOVERER_ROLE");
     bytes32 internal constant ACCESS_RESTORER_ROLE = keccak256("ACCESS_RESTORER_ROLE");
     bytes32 internal constant ACCESS_LIMITER_ROLE = keccak256("ACCESS_LIMITER_ROLE");
+    bytes32 internal constant PRICE_ACCEPTOR_ROLE = keccak256("PRICE_ACCEPTOR_ROLE");
 
     bytes32 internal constant INSTANT_ACTIVATION_SET_SIG = keccak256("InstantActivationSet(address,bool)");
 
@@ -302,6 +305,7 @@ abstract contract AcceptanceContext is Test {
     address internal expectedBundlerCore;
 
     PriceFeedRecord internal expectedPriceFeed;
+    string internal priceFeedKind;
     bool internal useLocalDeploymentLogs;
     string internal recordedRun;
 
@@ -389,6 +393,7 @@ abstract contract AcceptanceContext is Test {
         expectedQuorum = entry.parameters.committee.quorum;
         expectedSuspectWindow = entry.parameters.committee.suspectWindow;
         expectedPriceFeed = entry.priceFeed;
+        priceFeedKind = entry.priceFeedKind;
         if (
             expectedPriceFeed.wstEth == address(0)
                 && (bytes(entry.priceFeedKind).length == 0
@@ -546,9 +551,21 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
 
         bool isWstEth = expectedPriceFeed.wstEth != address(0);
         bool isUsdy = expectedPriceFeed.usdySource != address(0);
-        assertTrue(isWstEth != isUsdy, "unknown or ambiguous oracle config");
+        bool isTrailingAnchor = _isTrailingAnchor();
+        uint256 kinds = (isWstEth ? 1 : 0) + (isUsdy ? 1 : 0) + (isTrailingAnchor ? 1 : 0);
+        assertEq(kinds, 1, "unknown or ambiguous oracle config");
 
-        if (isWstEth) {
+        if (isTrailingAnchor) {
+            // The deployment's own checks, on the live oracle and the spec that the artifact records.
+            TrailingAnchorPriceFeedSpec memory spec = expectedPriceFeed.trailingAnchor;
+            assertEq(priceFeedKind, TrailingAnchorPriceFeed.kindName(spec.kind), "price feed kind");
+            assertEq(spec.loanToken, loanToken, "oracle loan token != market loan token");
+            assertEq(spec.collateralToken, collateralToken, "oracle collateral token != market collateral token");
+            address expectedImplementation = TrailingAnchorPriceFeed.implementation(spec);
+            assertEq(implementation.codehash, expectedImplementation.codehash, "trailing anchor oracle implementation");
+            TrailingAnchorPriceFeed.checkLaunch(oracle, spec, agent);
+            TrailingAnchorPriceFeed.checkLive(oracle, lltv);
+        } else if (isWstEth) {
             address expectedWstEth = expectedPriceFeed.wstEth;
             assertEq(expectedWstEth, collateralToken, "oracle WstETH != collateral token");
             address expectedImplementation = address(new WstEthRateOracle(expectedWstEth));
@@ -580,6 +597,10 @@ abstract contract AcceptanceMarketAssertions is AcceptanceContext {
         }
 
         assertGt(IReadOracle(oracle).price(), 0, "oracle price is zero");
+    }
+
+    function _isTrailingAnchor() internal view returns (bool) {
+        return expectedPriceFeed.trailingAnchor.source != address(0);
     }
 
     function _assertCircuitBreakerConfig() internal view {
@@ -1074,6 +1095,19 @@ abstract contract AcceptanceRoleAudit is AcceptanceMarketAssertions {
             _assertExitBookRoleHolderCompleteness(morphoBook);
             _assertExitBookRoleHolderCompleteness(erc4626Book);
         }
+        if (_isTrailingAnchor()) _assertTrailingAnchorRoleHolderCompleteness();
+    }
+
+    function _assertTrailingAnchorRoleHolderCompleteness() internal view {
+        bytes32[] memory roles = new bytes32[](3);
+        roles[0] = DEFAULT_ADMIN_ROLE;
+        roles[1] = MANAGER_ROLE;
+        roles[2] = PRICE_ACCEPTOR_ROLE;
+        address[][] memory holders = new address[][](3);
+        holders[0] = _arr1(agent);
+        holders[1] = _arr1(agent);
+        holders[2] = _arr1(agent);
+        _assertExactEnumerableRoleHolders(oracle, roles, holders);
     }
 
     function _assertNoInstantActivationCallers() private {

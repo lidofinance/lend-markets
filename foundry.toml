@@ -39,6 +39,8 @@ fail_on_revert = true
 wrap_comments = true
 line_length = 120
 single_line_statement_blocks = "single"
+# Audited files, formatted with forge 1.7.1. Forge 1.8 formats them differently and would break the audit checksums.
+ignore = ["src/controllers/LidoLendMarketController.sol", "src/libs/SettlementQueueLib.sol"]
 
 [profile.deployment]
 test = "test/deployment"

@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 250" width="760" height="250" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7d8590" role="img">
+<title>Example 2: a wrong value that clears up within the delay is dropped</title>
+<clipPath id="plot"><rect x="52" y="46" width="692" height="178"/></clipPath>
+<rect x="138.5" y="46" width="173.0" height="178" fill="#e5534b" fill-opacity="0.10"/>
+<line x1="52" x2="744" y1="224.0" y2="224.0" stroke="#7d8590" stroke-opacity="0.25"/>
+<text x="46" y="228.0" text-anchor="end">99.8</text>
+<line x1="52" x2="744" y1="188.4" y2="188.4" stroke="#7d8590" stroke-opacity="0.25"/>
+<text x="46" y="192.4" text-anchor="end">100</text>
+<line x1="52" x2="744" y1="152.8" y2="152.8" stroke="#7d8590" stroke-opacity="0.25"/>
+<text x="46" y="156.8" text-anchor="end">100.2</text>
+<line x1="52" x2="744" y1="117.2" y2="117.2" stroke="#7d8590" stroke-opacity="0.25"/>
+<text x="46" y="121.2" text-anchor="end">100.4</text>
+<line x1="52" x2="744" y1="81.6" y2="81.6" stroke="#7d8590" stroke-opacity="0.25"/>
+<text x="46" y="85.6" text-anchor="end">100.6</text>
+<line x1="52" x2="744" y1="46.0" y2="46.0" stroke="#7d8590" stroke-opacity="0.25"/>
+<text x="46" y="50.0" text-anchor="end">100.8</text>
+<text x="52.0" y="242" text-anchor="middle">0h</text>
+<text x="138.5" y="242" text-anchor="middle">1h</text>
+<text x="225.0" y="242" text-anchor="middle">2h</text>
+<text x="311.5" y="242" text-anchor="middle">3h</text>
+<text x="398.0" y="242" text-anchor="middle">4h</text>
+<text x="484.5" y="242" text-anchor="middle">5h</text>
+<text x="571.0" y="242" text-anchor="middle">6h</text>
+<text x="657.5" y="242" text-anchor="middle">7h</text>
+<text x="744.0" y="242" text-anchor="middle">8h</text>
+<line x1="52" x2="744" y1="224" y2="224" stroke="#7d8590"/>
+<g clip-path="url(#plot)">
+<path d="M52.0,179.5 L138.5,179.5 L138.5,179.5 L225.0,179.5 L225.0,179.5 L311.5,179.5 L311.5,179.5 L398.0,179.5 L398.0,179.5 L484.5,179.5 L484.5,179.5 L571.0,179.5 L571.0,179.5 L657.5,179.5 L657.5,179.5 L744.0,179.5 L744.0,179.5 L744.0,179.5 L744.0,206.2 L744.0,206.2 L744.0,206.2 L657.5,206.2 L657.5,206.2 L571.0,206.2 L571.0,206.2 L484.5,206.2 L484.5,206.2 L398.0,206.2 L398.0,206.2 L311.5,206.2 L311.5,206.2 L225.0,206.2 L225.0,206.2 L138.5,206.2 L138.5,206.2 L52.0,206.2 Z" fill="#bf8700" fill-opacity="0.22"/>
+<path d="M52.0,188.4 L138.5,188.4 L138.5,188.4 L225.0,188.4 L225.0,188.4 L311.5,188.4 L311.5,188.4 L398.0,188.4 L398.0,188.4 L484.5,188.4 L484.5,188.4 L571.0,188.4 L571.0,188.4 L657.5,188.4 L657.5,188.4 L744.0,188.4 L744.0,188.4 L744.0,188.4" fill="none" stroke="#bf8700" stroke-width="3.5"/>
+<path d="M52.0,152.8 L138.5,152.8 L138.5,152.8 L225.0,152.8 L225.0,152.8 L311.5,152.8 L311.5,152.8 L398.0,152.8 L398.0,152.8 L484.5,152.8 L484.5,152.8 L571.0,152.8 L571.0,152.8 L657.5,152.8 L657.5,152.8 L744.0,152.8 L744.0,152.8 L744.0,152.8" fill="none" stroke="#2da44e" stroke-width="1.5" stroke-dasharray="6 4"/>
+<path d="M52.0,188.4 L138.5,188.4 L138.5,81.6 L225.0,81.6 L225.0,81.6 L311.5,81.6 L311.5,188.4 L398.0,188.4 L398.0,188.4 L484.5,188.4 L484.5,188.4 L571.0,188.4 L571.0,188.4 L657.5,188.4 L657.5,188.4 L744.0,188.4 L744.0,188.4 L744.0,188.4" fill="none" stroke="#2f81f7" stroke-width="1.75"/>
+</g>
+<line x1="138.5" x2="138.5" y1="42" y2="224" stroke="#7d8590" stroke-dasharray="2 3"/>
+<text x="138.5" y="38" text-anchor="middle">recorded</text>
+<line x1="311.5" x2="311.5" y1="42" y2="224" stroke="#7d8590" stroke-dasharray="2 3"/>
+<text x="311.5" y="38" text-anchor="middle">dropped</text>
+<line x1="52" x2="70" y1="11" y2="11" stroke="#2f81f7" stroke-width="2"/>
+<text x="76" y="15">source</text>
+<rect x="140" y="5" width="18" height="12" fill="#bf8700" fill-opacity="0.22"/>
+<line x1="140" x2="158" y1="11" y2="11" stroke="#bf8700" stroke-width="3"/>
+<text x="164" y="15">anchor and its bounds</text>
+<line x1="333" x2="351" y1="11" y2="11" stroke="#2da44e" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="357" y="15">ceiling</text>
+<rect x="428" y="5" width="18" height="12" fill="#e5534b" fill-opacity="0.18"/>
+<text x="452" y="15">price() reverts</text>
+</svg>

@@ -9,6 +9,7 @@ Easy Track motion. This repository does not deploy Easy Track or its executor.
 - `ProtocolDeployment` / `ProtocolDeployer`: protocol backbone and a new or reused CircuitBreaker.
 - `MarketDeployment`: market creation, price-feed proxy deployment/validation and address output.
 - `WethWstethMarket` at the start of `mainnet/DeployWethWsteth.s.sol`: shared WETH/wstETH parameters and price-feed functions.
+- `TrailingAnchorMarket`: the recipe for a market over a trailing anchor oracle (`UsdyNavOracle` or `CentrifugeNavOracle`). `TrailingAnchorPriceFeed` holds its oracle checks, which acceptance also runs.
 - `ProtocolDeployer._deployExitBooks`: independent exit-book deployment.
 - `PeripheryDeployment`: bundler and Vault V2 helpers.
 
@@ -31,6 +32,23 @@ calls `_deployMarket` inside its broadcast boundary. Tests use the reusable reci
 `parameters.name` identifies the market and its integration-test role. Set `parameters.market.oracle` or
 `parameters.market.guardianSignals` to reuse a reviewed deployment; zero creates that resource. Reused contracts are
 validated before market deployment. Set `ProtocolParameters.circuitBreaker` to reuse a CircuitBreaker.
+
+A market over a trailing anchor oracle inherits `TrailingAnchorMarket` and calls
+`_deployTrailingAnchorMarket(p, parameters, msg.sender)` inside its broadcast. The recipe's constructor takes a
+`TrailingAnchorPriceFeedSpec`: the adapter kind and source, the market tokens, the launch parameters and the seed range.
+A field that a spec leaves out reads as zero, so the constructor refuses a zero in any of the eight parameters and in the
+seed range. It does not check the width of the seed range: the reviewer checks that `seedMinPrice` and `seedMaxPrice`
+are a narrow range around the live source price, since the seed price becomes the anchor and the base price.
+With `parameters.market.oracle` zero, the recipe deploys the oracle and initializes it in the proxy's constructor; a
+source price outside the seed range stops the run. The recipe then grants `DEFAULT_ADMIN_ROLE`, `MANAGER_ROLE` and
+`PRICE_ACCEPTOR_ROLE` to the Agent, and the deployer renounces its admin role, so the deployer must not be the Agent.
+A new or reused oracle must be the spec's adapter behind an Agent-administered proxy, with the spec's parameters, the
+Agent as the only holder of each role, the sizing rule kept at the market's LLTV, the anchor between the floor and the
+ceiling, and a price that `price()` returns. To reuse an oracle after `setParameters`, put the reviewed live parameters
+in the spec. After a later role change, the recipe refuses each new market on that oracle, since the spec has no input
+for other role holders. The market's record keeps the spec in `priceFeed.trailingAnchor`, with `priceFeedKind` `usdy-nav` or
+`centrifuge-nav`. The fork helpers do not know these kinds yet: preparing a run that records such a market fails, and
+a fork suite cannot bind it.
 
 ## Simulate and broadcast
 
