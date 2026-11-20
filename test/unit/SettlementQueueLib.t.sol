@@ -81,6 +81,14 @@ contract SQHarness {
         return SettlementQueueLib.settlementSlice(mv, p, sliceAssets, 0);
     }
 
+    function settlementLtvSlice(MarketView memory mv, address b, PositionView memory p)
+        external
+        view
+        returns (uint256)
+    {
+        return s.settlementLtvSlice(mv, b, p);
+    }
+
     function sliceToLtv(uint256 d, uint256 c, uint256 t) external returns (uint256) {
         return SettlementQueueLib.sliceToLtv(d, c, t);
     }
@@ -470,6 +478,34 @@ contract SettlementQueueLibTest is Test {
         uint256 slice = q.personalSlice(_market(1.5e36), _b(2), _pos(50, 100));
         assertEq(slice, _expectedSlice(50, 150, 0.3e18), "settlement-LTV cut applied to a non-root borrower");
         assertEq(slice, 7, "exact");
+    }
+
+    /// @dev At a zero price the collateral is worth nothing, so neither quote is offered, though both are at a
+    ///      live price.
+    function test_allowedSlice_zeroPrice_returnsNoQuotes() public {
+        _setFloor(2_000, 0);
+        q.sync(_b(1), _pos(100, 10_000));
+        q.setSettlementLtv(_b(1), 0.001e18);
+        assertGt(q.personalSlice(_market(1.5e36), _b(1), _pos(100, 10_000)), 0, "personal quote at a live price");
+        assertGt(q.queueRootSlice(_market(1.5e36), _b(1), _pos(100, 10_000)), 0, "root quote at a live price");
+
+        assertEq(q.personalSlice(_market(0), _b(1), _pos(100, 10_000)), 0, "no personal quote at a zero price");
+        assertEq(q.queueRootSlice(_market(0), _b(1), _pos(100, 10_000)), 0, "no root quote at a zero price");
+    }
+
+    /// @dev Debt 75 against collateral worth 150 is a live LTV of exactly 0.5: a target at or above it cuts nothing,
+    ///      one below it does.
+    function test_settlementLtvSlice_targetAtOrAboveLiveLtv_isZero() public {
+        MarketView memory mv = _market(1.5e36);
+        PositionView memory p = _pos(75, 100);
+        q.sync(_b(1), p);
+
+        q.setSettlementLtv(_b(1), 0.5e18);
+        assertEq(q.settlementLtvSlice(mv, _b(1), p), 0, "target equal to the live LTV");
+        q.setSettlementLtv(_b(1), 0.6e18);
+        assertEq(q.settlementLtvSlice(mv, _b(1), p), 0, "target above the live LTV");
+        q.setSettlementLtv(_b(1), 0.4e18);
+        assertEq(q.settlementLtvSlice(mv, _b(1), p), _expectedSlice(75, 150, 0.4e18), "target below the live LTV");
     }
 
     /// @dev For the root borrower the LTV-step term (current LTV minus the step) beats the debt-fraction floor.

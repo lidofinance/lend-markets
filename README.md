@@ -1,8 +1,8 @@
 # Lido Lend Markets
 
-Lido Lend is a family of isolated lending markets for established, low-risk looping trades, built on the [`lido-lend`](https://github.com/lidofinance/lido-lend) Morpho Blue fork. Each market is narrow by design, with strong exit paths and conservative controls that limit how quickly new collateral becomes borrowable.
+Lido Lend is a family of isolated lending markets for established looping trades, built on the [`lend`](https://github.com/lidofinance/lend) Morpho Blue fork. Each market is narrow by design, with several exit paths and controls that limit how quickly new collateral becomes borrowable.
 
-The Morpho-style market accounting lives in that core, with the interest-rate model in [`lido-lend-irm`](https://github.com/lidofinance/lido-lend-irm). This repository — Lido Lend Markets — holds everything built on top: the per-market policy and contracts, the specifications, the deployment scripts, and the deployed-address registry.
+The Morpho-style market accounting lives in that core, with the interest-rate model in [`lend-irm`](https://github.com/lidofinance/lend-irm). This repository — Lido Lend Markets — holds everything built on top: the per-market policy and contracts, the specifications, the deployment scripts, and the deployed-address registry.
 
 ## Setup
 
@@ -21,36 +21,34 @@ forge build --force
 Run the local test suite (everything except `test/fork/`):
 
 ```sh
-forge test --no-match-path 'test/fork/**'
+forge test --no-match-path 'test/{fork,deployment}/**'
 ```
 
-The suites under `test/fork/` drive an already-deployed protocol, so they need one: `RPC_URL` is the node to
-fork — the node that HOLDS the deployment — and `ARTIFACTS_DIR` names the deploy run whose artifacts under
-`deployed/<run>/` they read. They revert if either is unset, the run is absent, or its recorded chain id does
-not match the forked chain. No registry is composed and no preparation step is needed.
-
-Locally, `make provision-fork` deploys and activates the fork markets onto a local anvil fork of the network
-`CONFIG` names (mainnet by default), using the test-only `FORK_CONFIG=fork-<CONFIG>`, and leaves it running;
-`make test-fork-provision` chains provision -> test and stops Anvil only when that invocation started it:
+The fork suites create their own Forge fork and prepare the lending stack using shared Solidity deployment
+functions. No Anvil or shell provisioning is required. The fresh fixture currently supports mainnet, with two
+WETH/wstETH markets, exit books, bundler and Vault V2; USDY is omitted from that fixture.
 
 ```sh
-make test-fork-provision RPC_URL=<mainnet-archive-rpc>     # one shot
-make provision-fork RPC_URL=<archive-rpc>                  # or keep the anvil for repeated runs
-make provision-fork                                        # reuses a compatible anvil already on :8545
-make test-fork-live                                       # re-run the suites against it, no re-provisioning
-make provision-stop
+make test-fork RPC_URL=<mainnet-archive-rpc>  # integrations + fresh-deployment acceptance
+make test-deployment RPC_URL=<mainnet-archive-rpc>         # deployment-state scenarios
 ```
 
-Against a real deploy run, point them at that network instead:
+`FORK_BLOCK=<block>` pins the source block. To exercise an existing deployment without preparing it, bind its
+a recorded Solidity deployment description instead:
 
 ```sh
-make fork-run RUN=<run>       # RPC_URL from .env is the network the run lives on
+make test-fork RUN=<run> PREPARE=false RPC_URL=<network-rpc>
 ```
+
+Deployment parameters and dependency addresses live in Solidity files under `script/deployment/<network>/`.
+Run `forge script <recipe.s.sol> --rpc-url <rpc>` to simulate; add `--broadcast` to deploy. Results and State Mate
+configurations are maintained manually. See [deployment instructions](script/DEPLOYMENT.md) for signer inputs,
+Solidity deployment descriptions and acceptance checks.
 
 Format Solidity:
 
 ```sh
-forge fmt src/LidoLendERC4626.sol src/GuardianSignals.sol src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test
+forge fmt src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces src/oracle src/libs src/periphery src/utils script test
 ```
 
 ## Repository Tooling
@@ -60,9 +58,9 @@ Most everyday commands are wrapped in a `Makefile`:
 ```sh
 make help            # list available targets
 make build           # forge build
-make test            # all tests, local + fork; fork suites require RPC_URL + ARTIFACTS_DIR
+make test            # local + fork suites; RPC_URL required
 make test-local      # local suites only (excludes test/fork/); no RPC
-make test-fork       # test/fork/ only; the suites revert without the fork setup (copy .env.example to .env)
+make test-fork       # integrations + acceptance on a fresh mainnet fixture
 make fmt-check       # forge fmt --check on tracked paths (local only; CI does not fail on style)
 make lint            # forge lint
 make coverage        # coverage of the whole suite; fork suites revert without the fork setup
@@ -71,21 +69,21 @@ make snapshot-diff   # fresh run diffed against .gas-snapshot
 make slither         # static analysis (requires `slither` in PATH)
 make solhint         # stylistic/security checks (requires `solhint` in PATH)
 make ci              # everything CI runs on PRs: build + lint + local tests
-make provision-fork  # deploy + activate the fork markets on a local anvil fork of CONFIG's network
-make provision-stop  # stop the anvil provision-fork started
-make test-fork-live  # fork suites against an already-provisioned anvil (the iterative path)
-make test-fork-provision  # provision -> test-fork against it -> teardown
+make test-deployment # missing/inert/active deployment-state scenarios on a mainnet fork
+make test-fork RUN=mainnet # prepare absent/inert WETH/wstETH markets on a fork of caller RPC
 ```
 
 Environment variables are documented in `.env.example`. Copy it to `.env` and set `RPC_URL`; fork tests
-additionally need `ARTIFACTS_DIR`, which the provisioning targets above pass for you. For every documented
-input, command-line assignments take precedence over exported environment values, which take precedence over
-`.env` and then Makefile defaults.
+use a fresh stack by default. Explicit `make test-fork RUN=<run>` prepares missing/inert markets in an existing
+deployment; add `PREPARE=false` to test it without preparation. `RUN` and `PREPARE` select these modes only when
+passed on the Make command line; values from `.env` or the environment do not change the mode.
+Make sets `DEPLOYMENT_RUN` and `PREPARE_MARKETS` internally. For other inputs, command-line assignments take
+precedence over exported environment values, then `.env`, then Makefile defaults.
 
-CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`); install that same version locally. `make test-mutation` is the one target that needs a newer forge than the pin and is therefore never run in CI. Workflows live under `.github/workflows/`: `ci.yml` (a `local` job — build/lint/local tests, no RPC — plus a `fork` job that provisions a deployment onto a local anvil fork from the `RPC_URL` secret and runs `test/fork/` against it), `static.yml` (Slither + Solhint), `coverage.yml` (whole-suite coverage, fork suites included via the same provisioned anvil), `gas-diff.yml` (whole-suite gas snapshot diff at one pinned block, posted as a PR comment), and `fuzz.yml` (deep fuzz/invariant, local suites only).
+CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`); install that version locally. `make test-mutation` is local only. Workflows under `.github/workflows/` cover build/lint/local and fresh-fork tests (`ci.yml`), coverage (`coverage.yml`), deep fuzz/invariants (`fuzz.yml`) and pending governance actions (`pending-action.yml`).
 Additional workflows check action configuration and compiled contract bytecode sizes.
 
-To run the local pre-commit fmt check, point Git at the bundled hook:
+To run the local pre-commit solhint check, point Git at the bundled hook:
 
 ```sh
 git config core.hooksPath .githooks
@@ -131,7 +129,7 @@ src/
 
 Start with the [system architecture](docs/specs/architecture.md). It contains the runtime and governance maps and links to the controller, guardian, lender-settlement, and Exit Book mechanism specifications.
 
-The vendored core (`lib/lido-lend`, contract `LidoLend`) is the Morpho-compatible market.
+The vendored core (`lib/lend`, contract `LidoLend`) is the Morpho-compatible market.
 
 - Upgradeable behind `OssifiableProxy`, with owner-gated market creation.
 - Preserves upstream `MarketParams`, `Position`, `Market`, and market id derivation.
@@ -151,8 +149,8 @@ Supporting pieces: `GuardianSignals` (shared address bans and activation strikes
 
 ## Fork Notes
 
-The Morpho Blue fork is the vendored `lib/lido-lend` dependency. See `FORK_NOTES.md`, which points to `lib/lido-lend/FORK_NOTES.md` for the fork point and core-level changes.
+The Morpho Blue fork is the vendored `lib/lend` dependency. See `FORK_NOTES.md`, which points to `lib/lend/FORK_NOTES.md` for the fork point and core-level changes.
 
 ## License
 
-Repository source files use SPDX headers. The Morpho Blue fork point is pinned in the `lib/lido-lend` dependency to upstream `main` commit `1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a`, where `src/Morpho.sol` is marked `GPL-2.0-or-later`. See `LICENSE` and `lib/lido-lend/FORK_NOTES.md`.
+Repository source files use SPDX headers. They are GPL-2.0-or-later, except `src/proxy/OssifiableProxy.sol`, imported Lido source under [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html). The Morpho Blue fork point is pinned in the `lib/lend` dependency to upstream `main` commit `1478e9cfe1b4d514f80682b3b60e4e12ff3ee45a`, where `src/Morpho.sol` is marked `GPL-2.0-or-later`. See `LICENSE` and `lib/lend/FORK_NOTES.md`.

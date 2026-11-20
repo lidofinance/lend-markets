@@ -834,7 +834,7 @@ function placeExitRequest(
 | `receiver` | `address` | Address credited the filled amount minus the priority fee. |
 | `minFillAssets` | `uint256` | Smallest amount a non-final fill may process; 0 for no minimum. A fill that closes the whole remaining request always qualifies. Values above `assets` are capped to `assets`. |
 | `maxShareBurn` | `uint256` | Nominal full-request vault-share budget. A fill may burn at most `ceil(maxShareBurn * fillAssets / assetsTotal)`. Across a split request, total burn may exceed this value by at most one raw share unit per additional fill. Must fit `uint128`; 0 disables the limit, and a non-zero value must cover the placement share quote. |
-| `ramp` | `PriorityRamp` | Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end. |
+| `ramp` | `PriorityRamp` | The priority-fee schedule. |
 | `deadline` | `uint256` | Strictly future fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends. |
 
 **Returns**
@@ -930,7 +930,7 @@ constructor(address morpho, address admin, uint256 maxLifetime_);
 function MORPHO() external view returns (IMorpho);
 ```
 
-The Morpho deployment this book reads positions from and withdraws against.
+The Morpho deployment this book is bound to.
 
 #### `isMarketAllowed`
 
@@ -1003,7 +1003,7 @@ function placeExitRequest(
 | `receiver` | `address` | Address credited the filled amount minus the priority fee. |
 | `minFillAssets` | `uint256` | Smallest amount a non-final fill may process; 0 for no minimum. A fill that closes the whole remaining request always qualifies. Values above `assets` are capped to `assets`. |
 | `maxShareBurn` | `uint256` | Nominal full-request supply-share budget. A fill may burn at most `ceil(maxShareBurn * fillAssets / assetsTotal)`. Across a split request, total burn may exceed this value by at most one raw share unit per additional fill. Must fit `uint128`; 0 disables the limit, and a non-zero value must cover the placement share quote. |
-| `ramp` | `PriorityRamp` | Priority-fee schedule (see `PriorityRamp`): start rate, end rate, hold, and ramp end. |
+| `ramp` | `PriorityRamp` | The priority-fee schedule. |
 | `deadline` | `uint256` | Strictly future fill cutoff, at most `now + MAX_REQUEST_LIFETIME` and not before the ramp ends. |
 
 **Returns**

@@ -1,7 +1,12 @@
 name: ci
 
 on:
+  push:
+    branches: [refactor/solidity-deployment, main, develop]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -15,17 +20,18 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          persist-credentials: false
           submodules: recursive
 
       - uses: ./.github/actions/repo-setup
 
       - name: build (with sizes)
-        run: forge build --sizes
+        run: make sizes
 
       - name: lint
         run: make lint
 
-      - name: test (local, excludes test/fork/)
+      - name: local tests
         run: make test-local
 
   fork:
@@ -35,16 +41,19 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          persist-credentials: false
           submodules: recursive
 
       - uses: ./.github/actions/repo-setup
 
-      - name: provision a fork deployment
+      - name: integrations and acceptance on a Forge fork
         env:
           RPC_URL: ${{ secrets.RPC_URL }}
         run: |
           test -n "$RPC_URL" || { echo "::error::RPC_URL secret required for the fork job"; exit 1; }
-          make provision-fork
+          make test-fork
 
-      - name: fork tests (against the provisioned deployment)
-        run: make test-fork RPC_URL=http://127.0.0.1:8545 ARTIFACTS_DIR=fork
+      - name: deployment and preparation scenarios on a Forge fork
+        env:
+          RPC_URL: ${{ secrets.RPC_URL }}
+        run: make test-deployment

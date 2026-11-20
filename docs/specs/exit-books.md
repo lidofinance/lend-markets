@@ -73,6 +73,9 @@ Expiry is not a stored state. A request remains `Open` after its deadline but ca
 
 Placement and cancellation are non-custodial. Placement checks the owner's current position and permission, but it does not reserve shares, allowance, authorization, or source liquidity. The same position can therefore back several requests, and later owner actions can make any of them unfillable.
 
+> [!WARNING]
+> **An unfillable request revives when its backing returns.** A request stays fillable until it is filled, cancelled or past its deadline, so once the owner again holds the shares and the allowance or authorization it needs, any filler can fill it at its current rate and keep the reward, even if the source is already liquid. Cancelling the request prevents this.
+
 ## Placement and backing
 
 New requests require an allowlisted source, a positive asset amount, a non-zero receiver, and a future deadline within the maximum request lifetime fixed when the book is deployed. The ramp offsets are seconds from creation. A valid fee ramp satisfies `startRate <= endRate <= 10%` and `rampStart <= rampEnd`, and it must finish by the deadline. `minFillAssets` is capped at the request amount; setting it to the full amount makes the request full-fill-only.
@@ -128,7 +131,7 @@ The second condition lets the final remainder close even when it is below the mi
 
 The fill executes in this order:
 
-1. Check pause, request status, deadline, reward recipient, and fill amount.
+1. Check pause, reward recipient, request status, deadline, and fill amount.
 2. Subtract `F` from the remaining request and mark it `Filled` when the remainder reaches zero.
 3. Ask the source to withdraw exactly `F` from the owner's position to the book.
 4. Measure the book's loan-asset balance change and require it to equal `F`; separately read the source-reported share burn and apply the optional limit.
@@ -172,6 +175,12 @@ receiverAssets + fillerReward + serviceCut = F
 
 Each fill uses its own amount, execution timestamp, and live service-fee configuration, so partial fills of one request can use different priority rates and payout splits. The fill call has no minimum-reward parameter.
 
+> [!NOTE]
+> **A fee update during a fill pays the old rate to the new recipient.** The book computes the service cut first and reads the recipient last, so if a payout transfer calls into a contract that enacts a pending fee-update motion, the new recipient gets that fill's cut at the old rate. If the update clears the recipient, the fill reverts for a token that rejects transfers to the zero address.
+
+> [!NOTE]
+> **A recipient that cannot receive the loan token stops fills.** Every fill pushes the service cut to the single service-fee recipient, so if the loan token rejects transfers to it, for example through an issuer blocklist, every fill in that token with a non-zero cut reverts until the fee manager changes the recipient or the fee.
+
 ## Preparing source liquidity
 
 If the source withdrawal is already executable, the book can be filled directly. Otherwise a helper can first perform a source-native operation and then call the book in the same transaction. Common routes for the Lido vault and Morpho market are:
@@ -188,7 +197,7 @@ Do not leave a new position or token balance in a public `Bundler3` or a shared 
 
 In a `Bundler3` bundle, every required preparation call and the fill use `skipRevert = false`. If the bundle skips a failed fill, earlier preparation can remain committed.
 
-Morpho supply and repay callbacks run before the core receives the incoming loan tokens. A fill called from either callback cannot use those tokens; the supply or repayment must finish first.
+Morpho supply and repay callbacks run before the core receives the incoming loan tokens. A fill called from either callback cannot use those tokens. It succeeds only if the core already holds enough of the loan token from elsewhere, for example from another market with the same loan token. Otherwise the supply or repayment must finish first.
 
 ## Filler workflow
 

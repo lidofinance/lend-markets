@@ -245,7 +245,7 @@ contract WstEthWethLeverageInstantActivationTest is ForkStack {
         _pokeAccrue(m); // fold in pending interest so the fresh borrows below start from an accrued clock
 
         WETH_ADDRESS = address(m.loanToken);
-        STETH_ADDRESS = _ext("stEth");
+        STETH_ADDRESS = forkDeployment.stEth;
         WSTETH_ADDRESS = address(m.collateralToken);
         WETH = IWETH(WETH_ADDRESS);
         STETH = IStETH(STETH_ADDRESS);
