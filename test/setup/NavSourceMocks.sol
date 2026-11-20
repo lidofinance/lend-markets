@@ -38,7 +38,8 @@ contract MockOndoPriceGetter is INavSourceMock {
 }
 
 /// @notice Centrifuge Spoke for one pool and share class. It refuses any other share class and a read that asks for the
-///         validity check, so a price comes back only for the exact call the oracle must make.
+///         validity check, so a price comes back only for the exact call the oracle must make. The price is
+///         `priceAge` seconds old at every read, zero unless a test sets it.
 contract MockCentrifugeSpoke is INavSourceMock {
     error ShareTokenDoesNotExist();
     error ValidityCheckRequested();
@@ -48,10 +49,39 @@ contract MockCentrifugeSpoke is INavSourceMock {
 
     uint256 public currentPrice;
     bool public isDown;
+    uint256 public priceAge;
+    uint256 public priceAhead;
+    address internal _shareToken;
 
-    constructor(uint64 poolId, bytes16 scId) {
+    constructor(uint64 poolId, bytes16 scId, address shareToken_) {
         POOL_ID = poolId;
         SHARE_CLASS_ID = scId;
+        _shareToken = shareToken_;
+    }
+
+    function setShareToken(address shareToken_) external {
+        _shareToken = shareToken_;
+    }
+
+    function setPriceAge(uint256 priceAge_) external {
+        priceAge = priceAge_;
+    }
+
+    /// @dev Seconds after the block time that the price is stamped: the issuer supplies the stamp.
+    function setPriceAhead(uint256 priceAhead_) external {
+        priceAhead = priceAhead_;
+    }
+
+    function shareToken(uint64 poolId, bytes16 scId) external view returns (address) {
+        if (poolId != POOL_ID || scId != SHARE_CLASS_ID) revert ShareTokenDoesNotExist();
+        return _shareToken;
+    }
+
+    /// @dev The real Spoke's maximum age is unbounded on the deployed pools, so its end of validity saturates.
+    function markersPricePoolPerShare(uint64 poolId, bytes16 scId) external view returns (uint64, uint64, uint64) {
+        if (isDown) revert SourceDown();
+        if (poolId != POOL_ID || scId != SHARE_CLASS_ID) revert ShareTokenDoesNotExist();
+        return (uint64(block.timestamp + priceAhead - priceAge), type(uint64).max, type(uint64).max);
     }
 
     function setCurrentPrice(uint256 currentPrice_) external {

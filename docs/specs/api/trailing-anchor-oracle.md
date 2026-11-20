@@ -8,9 +8,12 @@ Standard inherited role-membership and role-administration functions are not rep
 
 ## TrailingAnchorOracleBase
 
-Lido Lend oracle for collateral priced from a source quoted in the loan token's currency, at one loan token per unit of that currency. It returns the current price scaled by `PRICE_SCALE`, and reverts while that price sits outside the bounds around the anchor price and while the manager suspends pricing.
+Oracle for a market. It returns the price of the collateral token in the loan token. The price comes from an external source. The oracle returns it only while it is near a stored anchor price. If the source moves far from the anchor, `price()` reverts. The anchor then moves to the new price only after a delay, which gives time to pause the market.
 
-Concrete oracles bind one source in their constructor and override `_currentPrice()` with its ABI. Each declares its own storage namespace, so an anchor never carries over to an adapter of another kind. Anyone can call `updateAnchor()`. A current price within the bounds drags the anchor toward it at the yearly speeds, so the bounds follow a source that changes slowly. A current price outside them is recorded as a pending anchor. While the price stays outside the bounds on the pending anchor's side the anchor holds still, and once the pending anchor has waited `reanchorDelay` an update within `reanchorWindow` moves the anchor onto the pending anchor, or onto the price if it sits nearer the anchor. So a move past the bounds becomes the price only after it has been public for a whole delay: the time to stop the markets that read the oracle. No update takes the anchor more than `maxAnchorBelowMark` below `highWaterMark`, and no re-anchor more than `maxAnchorAboveMark` above it. That mark is the seed or the last accepted price, and only a drift up raises it, so however many steps a source takes past the bounds, it moves the anchor at most down to the floor and up to the ceiling; going further takes `acceptPrice()`.
+Each adapter reads one source in `_currentPrice()`. Each adapter has its own storage namespace, so an upgrade to a different adapter does not read the old anchor. The oracle assumes that one loan token is worth one unit of the source currency, for example 1 USDC = 1 USD. Anyone can call `updateAnchor()`:
+
+- Price inside the bounds: the anchor moves toward the price, limited by the rise and fall rates. This is a drift.
+- Price outside the bounds: the update records it as the pending anchor. If the price stays outside for `reanchorDelay`, the next update moves the anchor onto it. This is a re-anchor. A drift cannot move the anchor below the floor. A re-anchor cannot move it below the floor or above the ceiling. Only `acceptPrice()` moves it further.
 
 ### Enums
 
@@ -27,14 +30,14 @@ enum UpdateOutcome {
 }
 ```
 
-What one `updateAnchor()` call did, by the case it took:
+The result of one `updateAnchor()` call:
 
-- `WithinBounds`: the anchor moved toward the price as far as the speeds and the floor allow, and the pending anchor, if any, was dropped;
-- `PendingAnchorRecorded`: the price, outside the bounds with no held pending anchor, became the pending anchor;
-- `PendingAnchorHeld`: the held pending anchor waits out its delay; nothing changed;
-- `PendingAnchorApplied`: the anchor moved onto the pending anchor or the price, whichever is nearer, and no further than the floor or the ceiling; a price still outside the new bounds became the next pending anchor;
-- `AnchorOnFloor`: the delay passed, but the anchor sits on or below the floor; nothing changed;
-- `AnchorOnCeiling`: the delay passed, but the anchor sits on or above the ceiling; nothing changed.
+- `WithinBounds`: the price is inside the bounds. The anchor drifted toward it as far as the rates and the floor permit, and the pending anchor was dropped.
+- `PendingAnchorRecorded`: the price is outside the bounds, and it became the pending anchor.
+- `PendingAnchorHeld`: the active pending anchor is still in its delay. Nothing changed.
+- `PendingAnchorApplied`: the anchor moved onto the pending anchor or the price, whichever is nearer, but not past the floor or the ceiling. A price still outside the new bounds became the next pending anchor.
+- `AnchorOnFloor`: the delay is over, but the anchor is on or below the floor. Nothing changed.
+- `AnchorOnCeiling`: the delay is over, but the anchor is on or above the ceiling. Nothing changed.
 
 ### Structs
 
@@ -44,32 +47,60 @@ What one `updateAnchor()` call did, by the case it took:
 struct Parameters {
     uint64 maxPriceAboveAnchor;
     uint64 maxPriceBelowAnchor;
-    uint64 maxAnchorRisePerYear;
-    uint64 maxAnchorFallPerYear;
-    uint64 maxAnchorBelowMark;
-    uint64 maxAnchorAboveMark;
+    uint64 maxAnchorContinuousRiseRate;
+    uint64 maxAnchorContinuousFallRate;
+    uint64 maxAnchorBelowBase;
+    uint64 maxAnchorAboveBase;
     uint40 reanchorDelay;
     uint40 reanchorWindow;
 }
 ```
 
-What `initialize()` and `setParameters()` store, in the units of the getters of the same names.
+The values that `initialize()` and `setParameters()` store. Each field has the units of the getter with the same name.
+
+**Fields**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `maxPriceAboveAnchor` | `uint64` | Upper bound, as a fraction of the anchor price. |
+| `maxPriceBelowAnchor` | `uint64` | Lower bound, as a fraction of the anchor price. |
+| `maxAnchorContinuousRiseRate` | `uint64` | Largest yearly rate at which a drift raises the anchor. |
+| `maxAnchorContinuousFallRate` | `uint64` | Largest yearly rate at which a drift lowers the anchor. |
+| `maxAnchorBelowBase` | `uint64` | Floor, as a fraction of `basePrice`. |
+| `maxAnchorAboveBase` | `uint64` | Ceiling, as a fraction of `basePrice`. |
+| `reanchorDelay` | `uint40` | Seconds that a pending anchor waits before a re-anchor. |
+| `reanchorWindow` | `uint40` | Seconds after the delay in which a re-anchor can occur. |
 
 ### Events
 
 #### `AnchorSet`
 
 ```solidity
-event AnchorSet(uint256 anchorPrice, uint40 anchorAt, bool accepted);
+event AnchorSet(uint256 anchorPrice, uint256 anchorAt, bool accepted);
 ```
 
-The anchor was set; `accepted` is true for the seed in `initialize()` and for `acceptPrice()`, false for an update.
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `anchorPrice` | `uint256` | The new anchor price, with `PRICE_DECIMALS` decimals. |
+| `anchorAt` | `uint256` | Time when the anchor changed. |
+| `accepted` | `bool` | True for the seed in `initialize()` and for `acceptPrice()`, false for an update. |
+
+The anchor changed.
 
 #### `PendingAnchorSet`
 
 ```solidity
-event PendingAnchorSet(uint256 pendingAnchorPrice, uint40 pendingAnchorAt);
+event PendingAnchorSet(uint256 pendingAnchorPrice, uint256 pendingAnchorAt);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `pendingAnchorPrice` | `uint256` | Price of the pending anchor, with `PRICE_DECIMALS` decimals. |
+| `pendingAnchorAt` | `uint256` | Time when the update recorded the pending anchor. |
 
 An update recorded a pending anchor.
 
@@ -87,7 +118,14 @@ The pending anchor was dropped.
 event AnchorUpdated(UpdateOutcome indexed outcome, uint256 currentPrice);
 ```
 
-An `updateAnchor()` call ran: what it did and the current price it read. Emitted after the events of the state it changed.
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `outcome` | `UpdateOutcome` | The result of the call. |
+| `currentPrice` | `uint256` | The current price that the call read, with `PRICE_DECIMALS` decimals. |
+
+An `updateAnchor()` call completed, with its result and the current price that it read. The call emits this event after the events of its state changes.
 
 #### `ParametersSet`
 
@@ -95,15 +133,27 @@ An `updateAnchor()` call ran: what it did and the current price it read. Emitted
 event ParametersSet(Parameters parameters);
 ```
 
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `parameters` | `Parameters` | The new parameters. |
+
 The parameters changed.
 
 #### `PricingResumesAtSet`
 
 ```solidity
-event PricingResumesAtSet(uint40 resumesAt);
+event PricingResumesAtSet(uint256 resumesAt);
 ```
 
-The time pricing resumes at changed.
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `resumesAt` | `uint256` | Time at which pricing resumes. |
+
+The time at which pricing resumes changed.
 
 ### Errors
 
@@ -113,7 +163,7 @@ The time pricing resumes at changed.
 error ZeroAddress();
 ```
 
-An address argument was the zero address.
+An address argument is zero.
 
 #### `UnsupportedDecimals`
 
@@ -121,23 +171,111 @@ An address argument was the zero address.
 error UnsupportedDecimals(uint256 loanDecimals, uint256 collateralDecimals);
 ```
 
-The loan and collateral decimals leave no room for the 1e36 convention.
+The token decimals give a negative exponent for `PRICE_SCALE`.
 
-#### `InvalidParameters`
+#### `MaxPriceAboveAnchorIsZero`
 
 ```solidity
-error InvalidParameters();
+error MaxPriceAboveAnchorIsZero();
 ```
 
-A parameter is outside the range `setParameters()` names.
+`maxPriceAboveAnchor` is zero.
+
+#### `MaxPriceBelowAnchorIsZero`
+
+```solidity
+error MaxPriceBelowAnchorIsZero();
+```
+
+`maxPriceBelowAnchor` is zero.
+
+#### `MaxPriceAboveAnchorNotBelowWad`
+
+```solidity
+error MaxPriceAboveAnchorNotBelowWad(uint256 maxPriceAboveAnchor);
+```
+
+`maxPriceAboveAnchor` is 1e18 or more.
+
+#### `MaxPriceBelowAnchorNotBelowWad`
+
+```solidity
+error MaxPriceBelowAnchorNotBelowWad(uint256 maxPriceBelowAnchor);
+```
+
+`maxPriceBelowAnchor` is 1e18 or more.
+
+#### `MaxAnchorBelowBaseNotBelowWad`
+
+```solidity
+error MaxAnchorBelowBaseNotBelowWad(uint256 maxAnchorBelowBase);
+```
+
+`maxAnchorBelowBase` is 1e18 or more.
+
+#### `MaxAnchorAboveBaseNotBelowWad`
+
+```solidity
+error MaxAnchorAboveBaseNotBelowWad(uint256 maxAnchorAboveBase);
+```
+
+`maxAnchorAboveBase` is 1e18 or more.
+
+#### `MaxAnchorContinuousRiseRateExceedsWad`
+
+```solidity
+error MaxAnchorContinuousRiseRateExceedsWad(uint256 maxAnchorContinuousRiseRate);
+```
+
+`maxAnchorContinuousRiseRate` is more than 1e18.
+
+#### `MaxAnchorContinuousFallRateExceedsWad`
+
+```solidity
+error MaxAnchorContinuousFallRateExceedsWad(uint256 maxAnchorContinuousFallRate);
+```
+
+`maxAnchorContinuousFallRate` is more than 1e18.
+
+#### `ReanchorDelayBelowMinReanchorDelay`
+
+```solidity
+error ReanchorDelayBelowMinReanchorDelay(uint256 reanchorDelay, uint256 minReanchorDelay);
+```
+
+`reanchorDelay` is shorter than `MIN_REANCHOR_DELAY`.
+
+#### `ReanchorWindowBelowMinReanchorWindow`
+
+```solidity
+error ReanchorWindowBelowMinReanchorWindow(uint256 reanchorWindow, uint256 minReanchorWindow);
+```
+
+`reanchorWindow` is shorter than `MIN_REANCHOR_WINDOW`.
+
+#### `RiseOverDelayExceedsMaxPriceAboveAnchor`
+
+```solidity
+error RiseOverDelayExceedsMaxPriceAboveAnchor(uint256 riseOverDelay, uint256 maxPriceAboveAnchor);
+```
+
+A source that rises at the rise rate for one delay goes above the upper bound.
+
+#### `FallOverDelayExceedsMaxPriceBelowAnchor`
+
+```solidity
+error FallOverDelayExceedsMaxPriceBelowAnchor(uint256 fallOverDelay, uint256 maxPriceBelowAnchor);
+```
+
+A source that falls at the fall rate for one delay goes below the lower bound.
 
 #### `InvalidPricingResumesAt`
 
 ```solidity
-error InvalidPricingResumesAt(uint40 resumesAt);
+error InvalidPricingResumesAt(uint256 resumesAt);
 ```
 
-The suspension would end more than `MAX_PRICING_SUSPENSION` from now.
+`resumesAt` is more than `MAX_PRICING_SUSPENSION` after the current time.
 
 #### `ZeroPrice`
 
@@ -145,7 +283,7 @@ The suspension would end more than `MAX_PRICING_SUSPENSION` from now.
 error ZeroPrice();
 ```
 
-The source returned zero.
+The source returned a zero price.
 
 #### `PriceOutOfBounds`
 
@@ -153,12 +291,12 @@ The source returned zero.
 error PriceOutOfBounds(uint256 currentPrice, uint256 lowerBound, uint256 upperBound);
 ```
 
-The current price sits outside the bounds around the anchor price.
+The current price is outside the bounds around the anchor price.
 
 #### `PricingSuspended`
 
 ```solidity
-error PricingSuspended(uint40 resumesAt);
+error PricingSuspended(uint256 resumesAt);
 ```
 
 Pricing is suspended until `resumesAt`.
@@ -169,7 +307,7 @@ Pricing is suspended until `resumesAt`.
 error UnexpectedPrice(uint256 currentPrice, uint256 minPrice, uint256 maxPrice);
 ```
 
-The current price sits outside the range the price acceptor passed.
+The current price is outside the range that the caller gave.
 
 ### Functions
 
@@ -183,22 +321,38 @@ constructor(address loanToken, address collateralToken);
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `loanToken` | `address` | Loan token; its decimals set `PRICE_SCALE`. |
-| `collateralToken` | `address` | Collateral token; its decimals set `PRICE_SCALE`. |
+| `loanToken` | `address` | Loan token of the market. Its decimals set `PRICE_SCALE`. |
+| `collateralToken` | `address` | Collateral token of the market. Its decimals set `PRICE_SCALE`. |
 
 #### `initialize`
 
 ```solidity
-function initialize(address admin, Parameters calldata parameters) external;
+function initialize(
+    address admin,
+    Parameters calldata parameters,
+    uint256 minPrice,
+    uint256 maxPrice
+) external;
 ```
 
-Grants the admin, stores the parameters as `setParameters()` does and seeds the anchor from the current price.
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `admin` | `address` | First holder of `DEFAULT_ADMIN_ROLE`. |
+| `parameters` | `Parameters` | The parameters, with the same checks as in `setParameters()`. |
+| `minPrice` | `uint256` | Lowest current price to accept, inclusive, with `PRICE_DECIMALS` decimals. |
+| `maxPrice` | `uint256` | Highest current price to accept, inclusive, with `PRICE_DECIMALS` decimals. |
+
+Grants the admin role, stores the parameters and sets the first anchor to the current price. The call reverts if the current price is outside `minPrice` and `maxPrice`.
 
 #### `price`
 
 ```solidity
 function price() external view returns (uint256);
 ```
+
+Reverts while pricing is suspended, on a zero price, and while the current price is outside the bounds.
 
 #### `updateAnchor`
 
@@ -210,11 +364,11 @@ function updateAnchor() external returns (UpdateOutcome outcome);
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `outcome` | `UpdateOutcome` | What the call did; a keeper can read it with `eth_call` before sending the call. |
+| `outcome` | `UpdateOutcome` | The result of the call. |
 
-Moves the anchor toward a current price within the bounds, or, once a pending anchor has waited out the delay with the price outside the bounds on its side, onto the pending anchor or the price, whichever is nearer the anchor; records any other current price outside the bounds as the pending anchor. Neither move takes the anchor under the floor, `maxAnchorBelowMark` below `highWaterMark`, nor a re-anchor over the ceiling, `maxAnchorAboveMark` above it; an anchor already past one moves no further past it. Open to anyone in any block, also while `price()` reverts. Each call emits `AnchorUpdated`.
+Updates the anchor from the current price. Anyone can call it in any block, also while `price()` reverts. The returned outcome tells what changed.
 
-`block.timestamp` sets the time counted: a validator's few seconds of skew move the speeds' reach and the pending anchor's delay and window by those seconds.
+The call uses `block.timestamp`. A few seconds of validator skew change the drift limit, the delay and the window by those seconds.
 
 #### `acceptPrice`
 
@@ -229,7 +383,9 @@ function acceptPrice(uint256 minPrice, uint256 maxPrice) external;
 | `minPrice` | `uint256` | Lowest current price to accept, inclusive, with `PRICE_DECIMALS` decimals. |
 | `maxPrice` | `uint256` | Highest current price to accept, inclusive, with `PRICE_DECIMALS` decimals. |
 
-Moves the anchor to the current price wherever it sits, once the price acceptor has checked the value, restarts `highWaterMark` there and drops the pending anchor: the way out of a revert on the bounds without waiting out the delay, and the only way under the floor or over the ceiling. A current price outside `minPrice` and `maxPrice` is refused, so a price that moved after the check is not accepted.
+Sets the anchor and `basePrice` to the current price, at any distance from the old anchor, and drops the pending anchor. It ends a revert on the bounds without the delay. It is the only way to move the anchor past the floor or the ceiling.
+
+The call reverts if the current price is outside `minPrice` and `maxPrice`. Thus a price that changed after the caller checked it is not accepted.
 
 #### `setPricingResumesAt`
 
@@ -237,7 +393,13 @@ Moves the anchor to the current price wherever it sits, once the price acceptor 
 function setPricingResumesAt(uint40 resumesAt) external;
 ```
 
-Makes `price()` revert until `resumesAt`, at most `MAX_PRICING_SUSPENSION` from now, so liquidations wait while borrowers can still repay. A time not in the future lifts the suspension. Updates and acceptances run during a suspension.
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `resumesAt` | `uint40` | Time at which pricing resumes, at most `MAX_PRICING_SUSPENSION` after the current time. |
+
+Makes `price()` revert until `resumesAt`. Liquidations stop during that time, and borrowers can still repay. A time that is not in the future ends the suspension. `updateAnchor()` and `acceptPrice()` still work during a suspension.
 
 #### `setParameters`
 
@@ -245,35 +407,38 @@ Makes `price()` revert until `resumesAt`, at most `MAX_PRICING_SUSPENSION` from 
 function setParameters(Parameters calldata parameters) external;
 ```
 
-Sets every parameter at once and drops the pending anchor; the anchor and `highWaterMark` stay where they are. Each bound must be above zero and below a whole price, each speed at most a whole price a year, `maxAnchorBelowMark` and `maxAnchorAboveMark` below a whole price, the delay at least `MIN_REANCHOR_DELAY` and no longer than the rise speed takes to cover the upper bound, and the window above zero.
+Sets all parameters and drops the pending anchor. The anchor and `basePrice` do not change. The call reverts if a value is outside its range. Each check has its own error.
+
+The oracle does not know the markets that read it, so it does not check the parameters against their LLTV. The manager must keep this rule for each market: a position borrowed at the LLTV against the highest price still covers its debt and the liquidation incentive at the lowest price. Highest price = ceiling × (1 + maxPriceAboveAnchor). Lowest price = floor × (1 − maxPriceBelowAnchor).
 
 ### State variables
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `MANAGER_ROLE` | `bytes32` (constant) | Sets the parameters and suspends pricing. |
-| `PRICE_ACCEPTOR_ROLE` | `bytes32` (constant) | Accepts the current price as the anchor, whatever its distance from the last one. |
-| `PRICE_SCALE` | `uint256` (immutable) | 10^(ORACLE_PRICE_DECIMALS + loanDecimals - collateralDecimals - PRICE_DECIMALS): the scaling of a price to the price Morpho reads. |
-| `MIN_REANCHOR_DELAY` | `uint256` (constant) | Shortest `reanchorDelay`. |
-| `MAX_PRICING_SUSPENSION` | `uint256` (constant) | Longest a pricing suspension may run from the call that sets it. |
-| `maxPriceAboveAnchor` | `uint64` | How far the current price may sit above the anchor price before `price()` reverts, as a fraction of it, WAD. 0.0005e18 allows 0.05%. |
-| `maxPriceBelowAnchor` | `uint64` | How far the current price may sit below the anchor price before `price()` reverts, as a fraction of it, WAD. 0.001e18 allows 0.1%. |
-| `anchorAt` | `uint40` | When the anchor price was last set. |
+| `MANAGER_ROLE` | `bytes32` (constant) | Can set the parameters and suspend pricing. |
+| `PRICE_ACCEPTOR_ROLE` | `bytes32` (constant) | Can accept the current price as the anchor, at any distance from the old anchor. |
+| `PRICE_SCALE` | `uint256` (immutable) | Factor that converts a source price to the price that the core reads. 10^(ORACLE_PRICE_DECIMALS + loanDecimals − collateralDecimals − PRICE_DECIMALS). |
+| `MIN_REANCHOR_DELAY` | `uint256` (constant) | Shortest permitted `reanchorDelay`. |
+| `MIN_REANCHOR_WINDOW` | `uint256` (constant) | Shortest permitted `reanchorWindow`. Block times have a fixed step. A window shorter than that step can contain no block, and then a pending anchor never applies. |
+| `MAX_PRICING_SUSPENSION` | `uint256` (constant) | Longest time that one call can suspend pricing, counted from that call. |
+| `anchorPrice` | `uint104` | Price that the bounds are measured from, with `PRICE_DECIMALS` decimals. |
+| `basePrice` | `uint104` | Price that the floor and the ceiling are measured from, with `PRICE_DECIMALS` decimals. It starts at the seed price, and `acceptPrice()` restarts it at the accepted price. A drift up raises it. A re-anchor does not change it, so a re-anchor up can leave the anchor above it, up to the ceiling. |
+| `anchorAt` | `uint40` | Time when the anchor price was last set. |
+| `maxPriceAboveAnchor` | `uint64` | Upper bound: how far above the anchor price the current price can be, as a fraction of the anchor price, WAD. Above it, `price()` reverts. 0.0005e18 is 0.05%. |
+| `maxPriceBelowAnchor` | `uint64` | Lower bound: how far below the anchor price the current price can be, as a fraction of the anchor price, WAD. Below it, `price()` reverts. 0.001e18 is 0.1%. |
 | `pricingResumesAt` | `uint40` | Time before which `price()` reverts with `PricingSuspended`. |
-| `anchorPrice` | `uint256` | Price the current price is compared with, with `PRICE_DECIMALS` decimals. |
-| `maxAnchorRisePerYear` | `uint64` | Yearly speed at which an update may raise the anchor toward a price within the bounds, as a fraction of the anchor price, WAD. 0.06e18 lets it rise 6% a year, about 0.016% a day. |
-| `maxAnchorFallPerYear` | `uint64` | Yearly speed at which an update may lower the anchor toward a price within the bounds, as a fraction of the anchor price, WAD. 0.01e18 lets it fall 1% a year, about 0.003% a day. |
-| `reanchorDelay` | `uint40` | Seconds a pending anchor waits before an update can re-anchor. |
-| `reanchorWindow` | `uint40` | Seconds after the delay during which an update can re-anchor; after them the pending anchor expires, and the next update drops it or replaces it with a current price outside the bounds. |
-| `pendingAnchorAt` | `uint40` | When the pending anchor was recorded; zero for none. |
-| `pendingAnchorPrice` | `uint256` | Current price an update recorded outside the bounds, with `PRICE_DECIMALS` decimals; zero for none. The next re-anchor moves the anchor at most onto it: onto the current price if that sits nearer, and never past the floor or the ceiling. |
-| `maxAnchorBelowMark` | `uint64` | How far below `highWaterMark` an update may take the anchor, as a fraction of it, WAD. 0.01e18 allows 1%. |
-| `maxAnchorAboveMark` | `uint64` | How far above `highWaterMark` a re-anchor may take the anchor, as a fraction of it, WAD. 0.002e18 allows 0.2%. |
-| `highWaterMark` | `uint256` | Price the floor and the ceiling are measured from, with `PRICE_DECIMALS` decimals: the seed or the last accepted price, raised by a drift up, onto the new anchor when that passes it, or by the drift's step while the anchor already sits above it. A re-anchor never moves it, so a re-anchor up may leave the anchor above it, up to the ceiling. |
+| `pendingAnchorAt` | `uint40` | Time when the pending anchor was recorded. Zero means no pending anchor. |
+| `maxAnchorContinuousRiseRate` | `uint64` | Largest rate at which a drift can raise the anchor, continuously compounded per year, WAD. 0.06e18 permits a rise of e^0.06 − 1, about 6.18%, in a year. The update schedule does not change that. |
+| `maxAnchorContinuousFallRate` | `uint64` | Largest rate at which a drift can lower the anchor, continuously compounded per year, WAD. 0.01e18 permits a fall of 1 − e^−0.01, about 0.995%, in a year. The update schedule does not change that. |
+| `maxAnchorBelowBase` | `uint64` | Floor: how far below `basePrice` an update can move the anchor, as a fraction of that price, WAD. 0.01e18 is 1%. |
+| `maxAnchorAboveBase` | `uint64` | Ceiling: how far above `basePrice` a re-anchor can move the anchor, as a fraction of that price, WAD. 0.002e18 is 0.2%. |
+| `pendingAnchorPrice` | `uint104` | Price of the pending anchor, with `PRICE_DECIMALS` decimals. Zero means no pending anchor. |
+| `reanchorDelay` | `uint40` | Seconds that a pending anchor must wait before an update can re-anchor. |
+| `reanchorWindow` | `uint40` | Seconds after the delay in which an update can re-anchor. After the window, the pending anchor expires: the next update drops it or records a new one. |
 
 ## UsdyNavOracle
 
-NAV oracle for USDY, reading Ondo's price getter.
+NAV oracle for USDY. It reads the price from the price getter of Ondo.
 
 ### Functions
 
@@ -287,13 +452,47 @@ constructor(address source, address loanToken, address collateralToken);
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `SOURCE` | `IOndoPriceGetter` (immutable) | Ondo's documented price getter for USDY. |
+| `SOURCE` | `IOndoPriceGetter` (immutable) | Price getter of Ondo for USDY. |
 
 ## CentrifugeNavOracle
 
-NAV oracle for a Centrifuge share class, reading the Spoke's share price.
+NAV oracle for a Centrifuge share class. It reads the share price from the Centrifuge Spoke.
 
-The Spoke's own validity check is not requested, since its maximum age is unbounded on the deployed pools.
+The adapter does not use the validity check of the Spoke, because a pool can set an unbounded maximum age. The adapter refuses a price older than its own `MAX_PRICE_AGE`. The issuer supplies the time of the price, so the adapter also refuses a time after the block time.
+
+### Errors
+
+#### `ShareTokenMismatch`
+
+```solidity
+error ShareTokenMismatch(address shareToken, address collateralToken);
+```
+
+The token of the share class on the Spoke is not the collateral token.
+
+#### `MaxPriceAgeIsZero`
+
+```solidity
+error MaxPriceAgeIsZero();
+```
+
+`maxPriceAge` is zero.
+
+#### `StalePrice`
+
+```solidity
+error StalePrice(uint64 computedAt);
+```
+
+The Spoke computed the share price at `computedAt`, which is more than `MAX_PRICE_AGE` ago.
+
+#### `PriceFromFuture`
+
+```solidity
+error PriceFromFuture(uint64 computedAt);
+```
+
+The Spoke gives the share price the time `computedAt`, which is after the block time.
 
 ### Functions
 
@@ -304,6 +503,7 @@ constructor(
     address spoke,
     uint64 poolId,
     bytes16 scId,
+    uint256 maxPriceAge,
     address loanToken,
     address collateralToken
 );
@@ -313,6 +513,7 @@ constructor(
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `SPOKE` | `ICentrifugeSpoke` (immutable) | Centrifuge Spoke holding the price registry. |
-| `POOL_ID` | `uint64` (immutable) | Pool and share class the collateral token belongs to. |
-| `SHARE_CLASS_ID` | `bytes16` (immutable) |  |
+| `SPOKE` | `ICentrifugeSpoke` (immutable) | Centrifuge Spoke that holds the share prices. |
+| `POOL_ID` | `uint64` (immutable) | Pool of the collateral token. |
+| `SHARE_CLASS_ID` | `bytes16` (immutable) | Share class of the collateral token. |
+| `MAX_PRICE_AGE` | `uint256` (immutable) | Largest age of a share price that the adapter returns, in seconds since the Spoke computed it. |

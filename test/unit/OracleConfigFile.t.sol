@@ -25,8 +25,10 @@ contract OracleConfigFileHarness {
     }
 }
 
-/// @notice Unit tests for the USDY oracle configuration: the sanity band travels from the TOML into the
-///         constructor arguments, and a config missing or zeroing either bound is rejected before broadcast.
+/// @notice Unit tests for the oracle configuration files. USDY: the sanity band travels from the TOML into the
+///         constructor arguments, and a config missing or zeroing either bound is rejected before broadcast. NAV:
+///         every constructor argument and parameter travels from the TOML into the deployment and back from the
+///         artifact.
 contract OracleConfigFileTest is Test {
     OracleConfigFileHarness internal harness;
     string internal toml;
@@ -113,8 +115,11 @@ contract OracleConfigFileTest is Test {
         assertEq(cfg.source, address(0x5B), "source");
         assertEq(cfg.poolId, 281474976710662, "pool_id");
         assertEq(cfg.shareClassId, bytes16(0x00010000000000060000000000000001), "share_class_id");
+        assertEq(cfg.maxPriceAge, 7 days, "max_price_age");
         assertEq(cfg.loanToken, address(0x11), "loan_token");
         assertEq(cfg.collateralToken, address(0xC1), "collateral_token");
+        assertEq(cfg.seedMinPrice, 1.1e18, "seed_min_price");
+        assertEq(cfg.seedMaxPrice, 1.2e18, "seed_max_price");
         assertEq(
             cfg.parameters.maxPriceAboveAnchor,
             TrailingAnchorOracleModel.MAX_PRICE_ABOVE_ANCHOR,
@@ -126,20 +131,20 @@ contract OracleConfigFileTest is Test {
             "max_price_below_anchor"
         );
         assertEq(
-            cfg.parameters.maxAnchorRisePerYear,
-            TrailingAnchorOracleModel.MAX_ANCHOR_RISE_PER_YEAR,
-            "max_anchor_rise_per_year"
+            cfg.parameters.maxAnchorContinuousRiseRate,
+            TrailingAnchorOracleModel.MAX_ANCHOR_CONTINUOUS_RISE_RATE,
+            "max_anchor_continuous_rise_rate"
         );
         assertEq(
-            cfg.parameters.maxAnchorFallPerYear,
-            TrailingAnchorOracleModel.MAX_ANCHOR_FALL_PER_YEAR,
-            "max_anchor_fall_per_year"
+            cfg.parameters.maxAnchorContinuousFallRate,
+            TrailingAnchorOracleModel.MAX_ANCHOR_CONTINUOUS_FALL_RATE,
+            "max_anchor_continuous_fall_rate"
         );
         assertEq(
-            cfg.parameters.maxAnchorBelowMark, TrailingAnchorOracleModel.MAX_ANCHOR_BELOW_MARK, "max_anchor_below_mark"
+            cfg.parameters.maxAnchorBelowBase, TrailingAnchorOracleModel.MAX_ANCHOR_BELOW_BASE, "max_anchor_below_base"
         );
         assertEq(
-            cfg.parameters.maxAnchorAboveMark, TrailingAnchorOracleModel.MAX_ANCHOR_ABOVE_MARK, "max_anchor_above_mark"
+            cfg.parameters.maxAnchorAboveBase, TrailingAnchorOracleModel.MAX_ANCHOR_ABOVE_BASE, "max_anchor_above_base"
         );
         assertEq(cfg.parameters.reanchorDelay, TrailingAnchorOracleModel.REANCHOR_DELAY, "reanchor_delay");
         assertEq(cfg.parameters.reanchorWindow, TrailingAnchorOracleModel.REANCHOR_WINDOW, "reanchor_window");
@@ -151,29 +156,45 @@ contract OracleConfigFileTest is Test {
         harness.parseNav(invalid, "");
     }
 
-    function testRevert_parseNav_missingMaxAnchorRisePerYear() external {
-        string memory invalid = vm.replace(_navUsdyToml(), "max_anchor_rise_per_year = \"60000000000000000\"\n", "");
-        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_rise_per_year"));
+    function testRevert_parseNav_missingMaxAnchorContinuousRiseRate() external {
+        string memory invalid =
+            vm.replace(_navUsdyToml(), "max_anchor_continuous_rise_rate = \"60000000000000000\"\n", "");
+        vm.expectRevert(
+            abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_continuous_rise_rate")
+        );
         harness.parseNav(invalid, "");
     }
 
-    /// @dev The floor's and the ceiling's keys and the window are as required as the older keys.
-    function testRevert_parseNav_missingFloorCeilingOrWindow() external {
-        string memory invalid = vm.replace(_navUsdyToml(), "max_anchor_below_mark = \"10000000000000000\"\n", "");
-        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_below_mark"));
+    /// @dev The seed range and the Centrifuge price age are required.
+    function testRevert_parseNav_missingSeedOrAge() external {
+        string memory invalid = vm.replace(_navUsdyToml(), "seed_min_price = \"1100000000000000000\"\n", "");
+        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".seed_min_price"));
         harness.parseNav(invalid, "");
-        invalid = vm.replace(_navUsdyToml(), "max_anchor_above_mark = \"2000000000000000\"\n", "");
-        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_above_mark"));
+        invalid = vm.replace(_navUsdyToml(), "seed_max_price = \"1200000000000000000\"\n", "");
+        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".seed_max_price"));
+        harness.parseNav(invalid, "");
+        invalid = vm.replace(_navCentrifugeToml(), "max_price_age = 604800\n", "");
+        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_price_age"));
+        harness.parseNav(invalid, "");
+    }
+
+    /// @dev The floor's and the ceiling's keys and the window are required.
+    function testRevert_parseNav_missingFloorCeilingOrWindow() external {
+        string memory invalid = vm.replace(_navUsdyToml(), "max_anchor_below_base = \"10000000000000000\"\n", "");
+        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_below_base"));
+        harness.parseNav(invalid, "");
+        invalid = vm.replace(_navUsdyToml(), "max_anchor_above_base = \"2000000000000000\"\n", "");
+        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_above_base"));
         harness.parseNav(invalid, "");
         invalid = vm.replace(_navUsdyToml(), "reanchor_window = 86400\n", "");
         vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".reanchor_window"));
         harness.parseNav(invalid, "");
     }
 
-    /// @dev The validator needs both bounds, the delay and the window, a zero speed would leave the anchor unable to
-    ///      follow the source, and a zero `max_anchor_below_mark` or `max_anchor_above_mark` would leave every honest
-    ///      re-anchor under or over the high-water mark to governance, so a zero one is refused as unset before
-    ///      broadcast.
+    /// @dev The validator needs both bounds, the delay and the window, a zero rate would leave the anchor unable to
+    ///      follow the source, and a zero `max_anchor_below_base` or `max_anchor_above_base` would leave
+    ///      every honest re-anchor under or over the base price to governance, so a zero one is refused as unset
+    ///      before broadcast.
     function testRevert_parseNav_zeroRequiredParam() external {
         string memory invalid = vm.replace(
             _navUsdyToml(), "max_price_above_anchor = \"500000000000000\"", "max_price_above_anchor = \"0\""
@@ -184,18 +205,22 @@ contract OracleConfigFileTest is Test {
         vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".reanchor_delay"));
         harness.parseNav(invalid, "");
         invalid = vm.replace(
-            _navUsdyToml(), "max_anchor_fall_per_year = \"10000000000000000\"", "max_anchor_fall_per_year = \"0\""
+            _navUsdyToml(),
+            "max_anchor_continuous_fall_rate = \"10000000000000000\"",
+            "max_anchor_continuous_fall_rate = \"0\""
         );
-        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_fall_per_year"));
+        vm.expectRevert(
+            abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_continuous_fall_rate")
+        );
         harness.parseNav(invalid, "");
         invalid = vm.replace(
-            _navUsdyToml(), "max_anchor_below_mark = \"10000000000000000\"", "max_anchor_below_mark = \"0\""
+            _navUsdyToml(), "max_anchor_below_base = \"10000000000000000\"", "max_anchor_below_base = \"0\""
         );
-        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_below_mark"));
+        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_below_base"));
         harness.parseNav(invalid, "");
         invalid =
-            vm.replace(_navUsdyToml(), "max_anchor_above_mark = \"2000000000000000\"", "max_anchor_above_mark = \"0\"");
-        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_above_mark"));
+            vm.replace(_navUsdyToml(), "max_anchor_above_base = \"2000000000000000\"", "max_anchor_above_base = \"0\"");
+        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_anchor_above_base"));
         harness.parseNav(invalid, "");
     }
 
@@ -204,12 +229,12 @@ contract OracleConfigFileTest is Test {
     function testRevert_parseNav_valueWiderThanItsField() external {
         string memory invalid = vm.replace(
             _navUsdyToml(),
-            "max_anchor_rise_per_year = \"60000000000000000\"",
-            "max_anchor_rise_per_year = \"18446744073709551616\""
+            "max_anchor_continuous_rise_rate = \"60000000000000000\"",
+            "max_anchor_continuous_rise_rate = \"18446744073709551616\""
         );
         vm.expectRevert(
             abi.encodeWithSelector(
-                OracleConfigFile.ValueOutOfRange.selector, ".max_anchor_rise_per_year", uint256(1) << 64
+                OracleConfigFile.ValueOutOfRange.selector, ".max_anchor_continuous_rise_rate", uint256(1) << 64
             )
         );
         harness.parseNav(invalid, "");
@@ -235,12 +260,36 @@ contract OracleConfigFileTest is Test {
         harness.parseNav(invalid, "");
     }
 
-    /// @dev What deployment records under `[oracle]` reads back to the config it came from.
+    /// @dev What deployment records under `[oracle]` reads back to the config it came from: both kinds, and a
+    ///      `max_price_age` above the widest bare TOML integer, 2^63 − 1. Every number the config takes as a quoted
+    ///      string must come back from the artifact.
     function test_navArtifact_roundTrips() external view {
-        NavOracleConfig memory cfg = harness.parseNav(_navCentrifugeToml(), "");
-        string memory artifact = string.concat("[oracle]\n", harness.navArtifact(cfg));
-        NavOracleConfig memory back = harness.parseNav(artifact, ".oracle");
-        assertEq(keccak256(abi.encode(back)), keccak256(abi.encode(cfg)), "round trip");
+        string[3] memory configs = [
+            _navCentrifugeToml(),
+            _navUsdyToml(),
+            vm.replace(_navCentrifugeToml(), "max_price_age = 604800\n", "max_price_age = \"18446744073709551616\"\n")
+        ];
+        for (uint256 i; i < configs.length; ++i) {
+            NavOracleConfig memory cfg = harness.parseNav(configs[i], "");
+            string memory artifact = string.concat("[oracle]\n", harness.navArtifact(cfg));
+            NavOracleConfig memory back = harness.parseNav(artifact, ".oracle");
+            assertEq(keccak256(abi.encode(back)), keccak256(abi.encode(cfg)), "round trip");
+        }
+        assertEq(harness.parseNav(configs[2], "").maxPriceAge, 2 ** 64, "max_price_age above a bare integer");
+    }
+
+    /// @dev A zero seed edge or price age is no value: the reader refuses each as missing.
+    function testRevert_parseNav_zeroSeedOrAge() external {
+        string memory invalid =
+            vm.replace(_navUsdyToml(), "seed_min_price = \"1100000000000000000\"", "seed_min_price = \"0\"");
+        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".seed_min_price"));
+        harness.parseNav(invalid, "");
+        invalid = vm.replace(_navUsdyToml(), "seed_max_price = \"1200000000000000000\"", "seed_max_price = \"0\"");
+        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".seed_max_price"));
+        harness.parseNav(invalid, "");
+        invalid = vm.replace(_navCentrifugeToml(), "max_price_age = 604800", "max_price_age = 0");
+        vm.expectRevert(abi.encodeWithSelector(ConfigToml.MissingConfigValue.selector, ".max_price_age"));
+        harness.parseNav(invalid, "");
     }
 
     function _navUsdyToml() private pure returns (string memory) {
@@ -251,12 +300,14 @@ contract OracleConfigFileTest is Test {
             "collateral_token = \"0x00000000000000000000000000000000000000C1\"\n",
             "max_price_above_anchor = \"500000000000000\"\n",
             "max_price_below_anchor = \"1000000000000000\"\n",
-            "max_anchor_rise_per_year = \"60000000000000000\"\n",
-            "max_anchor_fall_per_year = \"10000000000000000\"\n",
-            "max_anchor_below_mark = \"10000000000000000\"\n",
-            "max_anchor_above_mark = \"2000000000000000\"\n",
+            "max_anchor_continuous_rise_rate = \"60000000000000000\"\n",
+            "max_anchor_continuous_fall_rate = \"10000000000000000\"\n",
+            "max_anchor_below_base = \"10000000000000000\"\n",
+            "max_anchor_above_base = \"2000000000000000\"\n",
             "reanchor_delay = 21600\n",
-            "reanchor_window = 86400\n"
+            "reanchor_window = 86400\n",
+            "seed_min_price = \"1100000000000000000\"\n",
+            "seed_max_price = \"1200000000000000000\"\n"
         );
     }
 
@@ -266,16 +317,19 @@ contract OracleConfigFileTest is Test {
             "source = \"0x000000000000000000000000000000000000005B\"\n",
             "pool_id = 281474976710662\n",
             "share_class_id = \"0x00010000000000060000000000000001\"\n",
+            "max_price_age = 604800\n",
             "loan_token = \"0x0000000000000000000000000000000000000011\"\n",
             "collateral_token = \"0x00000000000000000000000000000000000000C1\"\n",
             "max_price_above_anchor = \"500000000000000\"\n",
             "max_price_below_anchor = \"1000000000000000\"\n",
-            "max_anchor_rise_per_year = \"60000000000000000\"\n",
-            "max_anchor_fall_per_year = \"10000000000000000\"\n",
-            "max_anchor_below_mark = \"10000000000000000\"\n",
-            "max_anchor_above_mark = \"2000000000000000\"\n",
+            "max_anchor_continuous_rise_rate = \"60000000000000000\"\n",
+            "max_anchor_continuous_fall_rate = \"10000000000000000\"\n",
+            "max_anchor_below_base = \"10000000000000000\"\n",
+            "max_anchor_above_base = \"2000000000000000\"\n",
             "reanchor_delay = 21600\n",
-            "reanchor_window = 86400\n"
+            "reanchor_window = 86400\n",
+            "seed_min_price = \"1100000000000000000\"\n",
+            "seed_max_price = \"1200000000000000000\"\n"
         );
     }
 }

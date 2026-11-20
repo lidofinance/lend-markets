@@ -28,25 +28,36 @@ contract DeployNavOracle is Script, LidoLendPrimitives {
         OracleConfigFile.requireUndeployed(name);
 
         vm.startBroadcast();
-        address impl = NavOracleImplementation.deploy(c);
-        bytes memory init = abi.encodeCall(TrailingAnchorOracleBase.initialize, (msg.sender, c.parameters));
-        oracle = _behindProxy(impl, deployConfig.agent, init);
-        TrailingAnchorOracleBase nav = TrailingAnchorOracleBase(oracle);
-        bytes32 managerRole = nav.MANAGER_ROLE();
-        bytes32 priceAcceptorRole = nav.PRICE_ACCEPTOR_ROLE();
-        bytes32 adminRole = nav.DEFAULT_ADMIN_ROLE();
-        nav.grantRole(managerRole, deployConfig.evmScriptExecutor);
-        nav.grantRole(managerRole, deployConfig.agent);
-        nav.grantRole(priceAcceptorRole, deployConfig.agent);
-        nav.grantRole(adminRole, deployConfig.agent);
-        nav.renounceRole(adminRole, msg.sender);
+        oracle = _deployNavOracle(c, deployConfig.agent, deployConfig.evmScriptExecutor, msg.sender);
         vm.stopBroadcast();
 
         console2.log("oracle          :", name);
         console2.log("  kind          :", c.kind);
         console2.log("  navOracle     :", oracle);
         console2.log("  source        :", c.source);
-        console2.log("  anchor        :", nav.anchorPrice());
+        console2.log("  anchor        :", TrailingAnchorOracleBase(oracle).anchorPrice());
         console2.log("  recorded      :", OracleConfigFile.writeDeployed(name, oracle, metadata));
+    }
+
+    /// @dev Deploys the oracle `c` describes with `deployer`, the caller of every call here, as the temporary admin,
+    ///      then hands the roles to `agent` and `evmScriptExecutor` and renounces.
+    function _deployNavOracle(NavOracleConfig memory c, address agent, address evmScriptExecutor, address deployer)
+        internal
+        returns (address oracle)
+    {
+        address impl = NavOracleImplementation.deploy(c);
+        bytes memory init = abi.encodeCall(
+            TrailingAnchorOracleBase.initialize, (deployer, c.parameters, c.seedMinPrice, c.seedMaxPrice)
+        );
+        oracle = _behindProxy(impl, agent, init);
+        TrailingAnchorOracleBase nav = TrailingAnchorOracleBase(oracle);
+        bytes32 managerRole = nav.MANAGER_ROLE();
+        bytes32 priceAcceptorRole = nav.PRICE_ACCEPTOR_ROLE();
+        bytes32 adminRole = nav.DEFAULT_ADMIN_ROLE();
+        nav.grantRole(managerRole, evmScriptExecutor);
+        nav.grantRole(managerRole, agent);
+        nav.grantRole(priceAcceptorRole, agent);
+        nav.grantRole(adminRole, agent);
+        nav.renounceRole(adminRole, deployer);
     }
 }

@@ -2,6 +2,7 @@
 pragma solidity 0.8.36;
 
 import {LIQUIDATION_CURSOR, MAX_LIQUIDATION_INCENTIVE_FACTOR} from "@lido-lend/src/libraries/ConstantsLib.sol";
+import {MathLib} from "@lido-lend/src/libraries/MathLib.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -9,11 +10,7 @@ import {WAD} from "../../src/libs/Constants.sol";
 
 import {WstEthRateOracle} from "../../src/oracle/WstEthRateOracle.sol";
 import {UsdyStableOracle} from "../../src/oracle/UsdyStableOracle.sol";
-import {
-    TrailingAnchorOracleBase,
-    ORACLE_PRICE_DECIMALS,
-    PRICE_DECIMALS
-} from "../../src/oracle/TrailingAnchorOracleBase.sol";
+import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 import {NavOracleImplementation} from "./NavOracleImplementation.sol";
@@ -40,6 +37,11 @@ interface IFeedDecimals {
 }
 
 library OraclePreflight {
+    /// @dev Decimals of the price a NAV source gives.
+    uint256 private constant NAV_PRICE_DECIMALS = 18;
+    /// @dev Decimals of the price the core reads: one collateral unit in loan units, scaled by 1e36.
+    uint256 private constant ORACLE_PRICE_DECIMALS = 36;
+
     error UnknownOracleConfig(string name);
     error AmbiguousOracleConfig(string name);
     error OracleNotContract(address oracle);
@@ -53,25 +55,27 @@ library OraclePreflight {
     error OraclePriceOutOfConfiguredBounds(uint256 price, uint256 minPrice, uint256 maxPrice);
     error OraclePriceIsZero();
     /// @notice A position borrowed at `lltv` against the highest price the NAV oracle returns would not cover its debt
-    ///         and the liquidation incentive at the lowest; `largestAboveMark` is the widest `maxAnchorAboveMark` that
-    ///         would with this `maxAnchorBelowMark`, zero when none above zero would.
+    ///         and the liquidation incentive at the lowest. `largestAboveBase` is the widest
+    ///         `maxAnchorAboveBase` that would with this `maxAnchorBelowBase`, zero when none would.
     error NavCorridorTooWide(
-        uint256 maxAnchorBelowMark, uint256 maxAnchorAboveMark, uint256 lltv, uint256 largestAboveMark
+        uint256 maxAnchorBelowBase, uint256 maxAnchorAboveBase, uint256 lltv, uint256 largestAboveBase
     );
-    /// @notice A source falling at `maxAnchorFallPerYear` would outrun the lower bound within one delay, so each
-    ///         re-anchor would land short of it; `largestFall` is the fastest fall the bound covers.
-    error NavFallOutrunsDelay(uint256 maxAnchorFallPerYear, uint256 reanchorDelay, uint256 largestFall);
-
-    uint256 private constant YEAR = 365 days;
+    /// @notice The NAV oracle's `role` has `actual` holders, not the `expected` ones.
+    error NavRoleHolderCountMismatch(bytes32 role, uint256 expected, uint256 actual);
+    /// @notice The NAV oracle's `role` is held by `holder`, which is not one of its expected holders.
+    error NavRoleHolderUnexpected(bytes32 role, address holder);
 
     /// @param lltv The LLTV of the market the oracle is validated for; only a NAV oracle uses it.
+    /// @param expectedEvmScriptExecutor The EasyTrack executor, the second `MANAGER_ROLE` holder; only a NAV oracle
+    ///        uses it.
     function validate(
         string memory name,
         address oracle,
         address loanToken,
         address collateralToken,
         uint256 lltv,
-        address expectedAdmin
+        address expectedAdmin,
+        address expectedEvmScriptExecutor
     ) internal {
         string memory toml = OracleConfigFile.readRaw(name);
         bool isWstEth = OracleConfigFile.hasKey(toml, ".wsteth");
@@ -83,7 +87,9 @@ library OraclePreflight {
         if (isNav) {
             NavOracleConfig memory cfg = OracleConfigFile.readNav(name);
             address implementation = validateProxy(oracle, expectedAdmin);
-            validateNav(cfg, oracle, implementation, loanToken, collateralToken, lltv);
+            validateNav(
+                cfg, oracle, implementation, loanToken, collateralToken, lltv, expectedAdmin, expectedEvmScriptExecutor
+            );
         } else if (isWstEth) {
             WstEthOracleConfig memory cfg = OracleConfigFile.readWstEth(name);
             address implementation = validateProxy(oracle, expectedAdmin);
@@ -170,16 +176,18 @@ library OraclePreflight {
     }
 
     /// @notice The NAV oracle is the configured adapter over the market's tokens, its implementation is the one the
-    ///         config builds, it runs on the configured parameters, and they pass the two rules the oracle cannot
-    ///         check: the floor and the ceiling suit a market at `lltv`, and the fall speed stays within the lower
-    ///         bound over one delay.
+    ///         config builds, it runs on the configured parameters, they pass the sizing rule at `lltv`, and its
+    ///         roles have the deployment's holders: `expectedAdmin` alone for `DEFAULT_ADMIN_ROLE` and
+    ///         `PRICE_ACCEPTOR_ROLE`, `expectedAdmin` and `expectedEvmScriptExecutor` for `MANAGER_ROLE`.
     function validateNav(
         NavOracleConfig memory cfg,
         address oracle,
         address implementation,
         address loanToken,
         address collateralToken,
-        uint256 lltv
+        uint256 lltv,
+        address expectedAdmin,
+        address expectedEvmScriptExecutor
     ) internal {
         if (cfg.loanToken != loanToken) {
             revert OracleAddressMismatch("loan_token", loanToken, cfg.loanToken);
@@ -194,46 +202,68 @@ library OraclePreflight {
             ** (ORACLE_PRICE_DECIMALS
                 + IERC20Metadata(loanToken).decimals()
                 - IERC20Metadata(collateralToken).decimals()
-                - PRICE_DECIMALS);
+                - NAV_PRICE_DECIMALS);
         if (nav.PRICE_SCALE() != expectedScale) revert OracleScaleMismatch(expectedScale, nav.PRICE_SCALE());
         TrailingAnchorOracleBase.Parameters memory p = cfg.parameters;
         _requireUint("max_price_above_anchor", p.maxPriceAboveAnchor, nav.maxPriceAboveAnchor());
         _requireUint("max_price_below_anchor", p.maxPriceBelowAnchor, nav.maxPriceBelowAnchor());
-        _requireUint("max_anchor_rise_per_year", p.maxAnchorRisePerYear, nav.maxAnchorRisePerYear());
-        _requireUint("max_anchor_fall_per_year", p.maxAnchorFallPerYear, nav.maxAnchorFallPerYear());
-        _requireUint("max_anchor_below_mark", p.maxAnchorBelowMark, nav.maxAnchorBelowMark());
-        _requireUint("max_anchor_above_mark", p.maxAnchorAboveMark, nav.maxAnchorAboveMark());
+        _requireUint(
+            "max_anchor_continuous_rise_rate", p.maxAnchorContinuousRiseRate, nav.maxAnchorContinuousRiseRate()
+        );
+        _requireUint(
+            "max_anchor_continuous_fall_rate", p.maxAnchorContinuousFallRate, nav.maxAnchorContinuousFallRate()
+        );
+        _requireUint("max_anchor_below_base", p.maxAnchorBelowBase, nav.maxAnchorBelowBase());
+        _requireUint("max_anchor_above_base", p.maxAnchorAboveBase, nav.maxAnchorAboveBase());
         _requireUint("reanchor_delay", p.reanchorDelay, nav.reanchorDelay());
         _requireUint("reanchor_window", p.reanchorWindow, nav.reanchorWindow());
         requireNavSizing(p, lltv);
+
+        address[] memory agentOnly = new address[](1);
+        agentOnly[0] = expectedAdmin;
+        address[] memory managers = new address[](2);
+        managers[0] = expectedAdmin;
+        managers[1] = expectedEvmScriptExecutor;
+        _requireRoleHolders(nav, nav.DEFAULT_ADMIN_ROLE(), agentOnly);
+        _requireRoleHolders(nav, nav.MANAGER_ROLE(), managers);
+        _requireRoleHolders(nav, nav.PRICE_ACCEPTOR_ROLE(), agentOnly);
     }
 
-    /// @notice The two rules the oracle's validator cannot check, with the parameters as WAD fractions:
-    ///         - a position borrowed at `lltv` against the highest price the oracle returns, the ceiling × (1 +
-    ///           maxPriceAboveAnchor), still covers its debt and the core's liquidation incentive at the lowest, the
-    ///           floor × (1 − maxPriceBelowAnchor): (1 − maxAnchorBelowMark)(1 − maxPriceBelowAnchor) ≥ lltv
-    ///           × LIF × (1 + maxAnchorAboveMark)(1 + maxPriceAboveAnchor), rounded against the corridor;
-    ///         - a source falling at `maxAnchorFallPerYear` stays within the lower bound over one delay, the fall side
-    ///           of the rule the validator holds the rise to: reanchorDelay × maxAnchorFallPerYear ≤
-    ///           maxPriceBelowAnchor × 365 days.
+    /// @dev The role's members are counted and each one looked up in `expected`, so a repeated entry in `expected`
+    ///      cannot stand in for a second member.
+    function _requireRoleHolders(TrailingAnchorOracleBase nav, bytes32 role, address[] memory expected) private view {
+        uint256 count = nav.getRoleMemberCount(role);
+        if (count != expected.length) revert NavRoleHolderCountMismatch(role, expected.length, count);
+        for (uint256 i; i < count; ++i) {
+            address holder = nav.getRoleMember(role, i);
+            bool isExpected;
+            for (uint256 j; j < expected.length; ++j) {
+                if (holder == expected[j]) isExpected = true;
+            }
+            if (!isExpected) revert NavRoleHolderUnexpected(role, holder);
+        }
+    }
+
+    /// @notice The sizing rule, which the oracle cannot check because it does not know the market. A position borrowed
+    ///         at `lltv` against the highest price the oracle returns, the ceiling × (1 + maxPriceAboveAnchor), must
+    ///         still cover its debt and the core's liquidation incentive at the lowest, the floor × (1 −
+    ///         maxPriceBelowAnchor): (1 − maxAnchorBelowBase)(1 − maxPriceBelowAnchor) ≥ lltv × LIF × (1 +
+    ///         maxAnchorAboveBase)(1 + maxPriceAboveAnchor). LIF has the rounding of the core, and each other step
+    ///         rounds against the corridor.
     function requireNavSizing(TrailingAnchorOracleBase.Parameters memory p, uint256 lltv) internal pure {
         uint256 incentive = Math.min(
             MAX_LIQUIDATION_INCENTIVE_FACTOR,
-            Math.mulDiv(WAD, WAD, WAD - Math.mulDiv(LIQUIDATION_CURSOR, WAD - lltv, WAD))
+            MathLib.wDivDown(WAD, WAD - MathLib.wMulDown(LIQUIDATION_CURSOR, WAD - lltv))
         );
-        // What the upper bound needs with the ceiling on the mark, and the room the floor's lower bound leaves.
+        // What the upper bound needs with the ceiling on the base price, and the room the floor's lower bound
+        // leaves.
         uint256 needed = Math.mulDiv(
             Math.mulDiv(lltv, incentive, WAD, Math.Rounding.Ceil), WAD + p.maxPriceAboveAnchor, WAD, Math.Rounding.Ceil
         );
-        uint256 room = Math.mulDiv(WAD - p.maxAnchorBelowMark, WAD - p.maxPriceBelowAnchor, WAD);
-        if (room < Math.mulDiv(needed, WAD + p.maxAnchorAboveMark, WAD, Math.Rounding.Ceil)) {
+        uint256 room = Math.mulDiv(WAD - p.maxAnchorBelowBase, WAD - p.maxPriceBelowAnchor, WAD);
+        if (room < Math.mulDiv(needed, WAD + p.maxAnchorAboveBase, WAD, Math.Rounding.Ceil)) {
             uint256 largest = room < needed ? 0 : Math.mulDiv(room, WAD, needed) - WAD;
-            revert NavCorridorTooWide(p.maxAnchorBelowMark, p.maxAnchorAboveMark, lltv, largest);
-        }
-        if (uint256(p.reanchorDelay) * p.maxAnchorFallPerYear > uint256(p.maxPriceBelowAnchor) * YEAR) {
-            revert NavFallOutrunsDelay(
-                p.maxAnchorFallPerYear, p.reanchorDelay, uint256(p.maxPriceBelowAnchor) * YEAR / p.reanchorDelay
-            );
+            revert NavCorridorTooWide(p.maxAnchorBelowBase, p.maxAnchorAboveBase, lltv, largest);
         }
     }
 

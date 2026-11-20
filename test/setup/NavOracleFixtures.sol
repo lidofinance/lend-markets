@@ -57,14 +57,17 @@ abstract contract UsdyNavOracleFixture is NavOracleFixture {
 abstract contract CentrifugeNavOracleFixture is NavOracleFixture {
     uint64 internal constant POOL_ID = 281474976710662;
     bytes16 internal constant SHARE_CLASS_ID = 0x00010000000000060000000000000001;
+    uint256 internal constant MAX_PRICE_AGE = 7 days;
 
     function _setUpSource() internal override {
-        source = new MockCentrifugeSpoke(POOL_ID, SHARE_CLASS_ID);
         collateralToken = address(new MockERC20("Janus Henderson Anemoy Treasury Fund", "JTRSY", 6));
+        source = new MockCentrifugeSpoke(POOL_ID, SHARE_CLASS_ID, collateralToken);
     }
 
     function _newImplementation(address loanToken) internal override returns (address) {
-        return address(new CentrifugeNavOracle(address(source), POOL_ID, SHARE_CLASS_ID, loanToken, collateralToken));
+        return address(
+            new CentrifugeNavOracle(address(source), POOL_ID, SHARE_CLASS_ID, MAX_PRICE_AGE, loanToken, collateralToken)
+        );
     }
 
     function _namespace() internal pure override returns (string memory) {

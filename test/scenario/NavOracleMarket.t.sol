@@ -86,8 +86,8 @@ contract NavOracleMarketTest is NavOracleMarketSetup {
         m.liquidate(keeper, borrower, 100e18, 0);
     }
 
-    /// @dev A fall of 0.002% a day, about 0.73% a year and under the 1% fall speed, is followed by the keeper's daily
-    ///      updates: for 30 days the price returns every day and the anchor lands on it.
+    /// @dev A fall of 0.002% a day, about 0.73% a year and under the 0.995% of the fall rate, is followed by the
+    ///      keeper's daily updates: for 30 days the price returns every day and the anchor lands on it.
     function test_slowFall_followedByUpdates() public {
         Market storage m = _m();
         for (uint256 day = 1; day <= 30; ++day) {
@@ -121,7 +121,7 @@ contract NavOracleMarketTest is NavOracleMarketSetup {
     }
 
     /// @dev A real 5% fall goes past the floor: one delay later the keeper moves the anchor only onto the floor, 1%
-    ///      under the high-water mark, and the oracle keeps reverting with the floor's bounds. Governance accepts the
+    ///      under the base price, and the oracle keeps reverting with the floor's bounds. Governance accepts the
     ///      fallen price, and a position the fall pushed past LLTV is liquidated without bad debt.
     function test_deepFall_waitsOnTheFloorForGovernance() public {
         Market storage m = _m();
@@ -146,18 +146,18 @@ contract NavOracleMarketTest is NavOracleMarketSetup {
         m.liquidate(keeper, borrower, 100e18, 0);
     }
 
-    /// @dev A source that grows 10% a year, faster than the anchor's 6% rise: the keeper's drifts and re-anchors carry
-    ///      the anchor up until the ceiling, 0.2% over the high-water mark, which only the drifts raised, and there the
-    ///      oracle reverts. The source eases back to the ceiling's upper bound, the highest price the oracle returns,
-    ///      and a position is borrowed at LLTV against it. A walk down 0.2% past the anchor in every window ends on the
-    ///      floor, and a full liquidation at the lowest price the oracle returns there still repays the whole debt and
-    ///      leaves no bad debt.
+    /// @dev A source that grows 10% a year, faster than the anchor's 6.18% rise: the keeper's drifts and re-anchors
+    ///      carry the anchor up until the ceiling, 0.2% over the base price, which only the drifts raised, and
+    ///      there the oracle reverts. The source eases back to the ceiling's upper bound, the highest price the
+    ///      oracle returns, and a position is borrowed at LLTV against it. A walk down 0.2% past the anchor in every
+    ///      window ends on the floor, and a full liquidation at the lowest price the oracle returns there still
+    ///      repays the whole debt and leaves no bad debt.
     function test_growthToTheCeilingThenFaultyWalk_endsOnTheFloorWithoutBadDebt() public {
         Market storage m = _m();
         _growDaily(30, 0.1e18);
         TrailingAnchorOracleState memory s = _state();
-        uint256 mark = s.highWaterMark;
-        assertGt(mark, INITIAL_NAV, "the drifts raised the high-water mark");
+        uint256 basePrice = s.basePrice;
+        assertGt(basePrice, INITIAL_NAV, "the drifts raised the base price");
         assertEq(s.anchorPrice, s.ceiling(), "the anchor on the ceiling");
         vm.expectRevert(_boundsError());
         m.oracle.price();
@@ -167,7 +167,7 @@ contract NavOracleMarketTest is NavOracleMarketSetup {
         _lend(maxBorrow * 2);
         m.borrow(borrower, maxBorrow - 1);
 
-        uint256 floorPrice = mark - Math.mulDiv(mark, 0.01e18, 1e18);
+        uint256 floorPrice = basePrice - Math.mulDiv(basePrice, 0.01e18, 1e18);
         for (uint256 i; i < 20; ++i) {
             _setCurrentPriceAtAnchor(0.998e18);
             _keeper();
@@ -176,7 +176,7 @@ contract NavOracleMarketTest is NavOracleMarketSetup {
             assertGe(_state().anchorPrice, floorPrice, "never under the floor");
         }
         assertEq(_state().anchorPrice, floorPrice, "the walk ends on the floor");
-        assertEq(_state().highWaterMark, mark, "the high-water mark stays");
+        assertEq(_state().basePrice, basePrice, "the base price stays");
 
         uint256 lowest = _setCurrentPrice(_state().lowerBound());
         assertEq(m.oracle.price(), lowest, "the lowest price the oracle returns");
@@ -190,7 +190,7 @@ contract NavOracleMarketTest is NavOracleMarketSetup {
     }
 
     /// @dev A wrong 5% jump up is held past the delay: the keeper moves the anchor only onto the ceiling, 0.2% over the
-    ///      high-water mark, and the oracle keeps reverting, so the wrong value never becomes the price. The source
+    ///      base price, and the oracle keeps reverting, so the wrong value never becomes the price. The source
     ///      eases to the ceiling's upper bound, the highest price the oracle returns, and a position is borrowed at
     ///      LLTV against it. When the true price returns, the keeper re-anchors onto it one delay later, and a full
     ///      liquidation there repays the whole debt and leaves no bad debt.
@@ -201,7 +201,7 @@ contract NavOracleMarketTest is NavOracleMarketSetup {
         assertEq(_keeperWalk(), 1, "one re-anchor, onto the ceiling");
         TrailingAnchorOracleState memory s = _state();
         assertEq(s.anchorPrice, s.ceiling(), "the anchor on the ceiling");
-        assertEq(s.highWaterMark, INITIAL_NAV, "the high-water mark stays");
+        assertEq(s.basePrice, INITIAL_NAV, "the base price stays");
         vm.expectRevert(_boundsError());
         m.oracle.price();
 
@@ -222,16 +222,18 @@ contract NavOracleMarketTest is NavOracleMarketSetup {
         assertGt(m.core.position(m.id, borrower).collateral, 0, "collateral left after the incentive");
     }
 
-    /// @dev The same wrong jump with the ceiling out of the way, a `maxAnchorAboveMark` of almost a whole price, which
-    ///      the corridor rule refuses: the keeper re-anchors onto the wrong value one delay later, so it becomes the
-    ///      price. A position borrowed at LLTV against it is insolvent when the true price returns, since a re-anchor
-    ///      does not raise the floor, and its liquidation leaves bad debt.
-    function test_wrongJumpUp_withoutTheCeilingLeavesBadDebt() public {
+    /// @dev What the sizing rule of the market preflight prevents. The oracle takes a ceiling 6% over the base
+    ///      price, which the rule refuses at this market's 98% LLTV. The keeper re-anchors onto the wrong 5% jump one
+    ///      delay later, a position is borrowed at LLTV against it, and when the true price returns it is insolvent:
+    ///      its liquidation leaves bad debt.
+    function test_wrongJumpUp_corridorWiderThanTheSizingRuleLeavesBadDebt() public {
         Market storage m = _m();
         TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
-        p.maxAnchorAboveMark = uint64(1e18 - 1);
+        p.maxAnchorAboveBase = 0.06e18;
+        assertFalse(TrailingAnchorOracleModel.sized(p, LLTV), "the sizing rule refuses the ceiling");
         vm.prank(governance);
         navOracle.setParameters(p);
+
         uint256 truePrice = nav.currentPrice();
         uint256 wrong = _setCurrentPriceAtAnchor(WRONG_JUMP);
         assertEq(_keeperWalk(), 1, "one re-anchor onto the wrong value");

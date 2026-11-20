@@ -38,6 +38,7 @@ contract AddMarket is Script, ProtocolDeployer {
     struct RunContext {
         ArtifactMetadata artifacts;
         address agent;
+        address evmScriptExecutor;
     }
 
     struct MarketInput {
@@ -69,8 +70,11 @@ contract AddMarket is Script, ProtocolDeployer {
             DeployConfig memory deployConfig = DeployConfigFile.read(config);
             _requireChainId(deployConfig.chainId);
             DeployConfigFile.requireActorSeparation(deployConfig, msg.sender);
-            context =
-                RunContext({artifacts: DeployConfigFile.artifactMetadata(deployConfig), agent: deployConfig.agent});
+            context = RunContext({
+                artifacts: DeployConfigFile.artifactMetadata(deployConfig),
+                agent: deployConfig.agent,
+                evmScriptExecutor: deployConfig.evmScriptExecutor
+            });
         }
 
         MarketInput memory input = _loadMarketInput(config, name, context);
@@ -125,7 +129,8 @@ contract AddMarket is Script, ProtocolDeployer {
             input.market.loanToken,
             input.market.collateralToken,
             input.market.lltv,
-            context.agent
+            context.agent,
+            context.evmScriptExecutor
         );
         if (input.recordedOracle != address(0) && input.recordedOracle != input.market.oracle) {
             revert OracleArtifactMismatch(input.recordedOracle, input.market.oracle);

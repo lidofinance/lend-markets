@@ -15,7 +15,9 @@ library NavOracleImplementation {
         }
         if (OracleConfigFile.isKind(cfg.kind, OracleConfigFile.KIND_NAV_CENTRIFUGE)) {
             return address(
-                new CentrifugeNavOracle(cfg.source, cfg.poolId, cfg.shareClassId, cfg.loanToken, cfg.collateralToken)
+                new CentrifugeNavOracle(
+                    cfg.source, cfg.poolId, cfg.shareClassId, cfg.maxPriceAge, cfg.loanToken, cfg.collateralToken
+                )
             );
         }
         revert OracleConfigFile.UnknownOracleKind(cfg.kind);
