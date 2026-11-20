@@ -10,8 +10,6 @@ parameters:
   - &wstEth "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
   - &stEth "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"
 
-  # Temporary 1-of-1 committees.
-  - &committeeSigner "0x62c89F5768D0FeC0915fb614C5eDd9fdeaA2A3fd"
   - &easyTrackTrustedCaller "0x4f29aA4c299e17176b48c41D67ee97aE673d29bC"
   - &safeSingleton "0x41675c099f32341bf84bfc5382af534df5c7461a"
   - &safeFallbackHandler "0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99"
@@ -757,8 +755,15 @@ l1:
       checks:
         VERSION: "1.4.1"
         getChainId: 1
-        getThreshold: 1
-        getOwners: [*committeeSigner]
+        getThreshold: 3
+        getOwners:
+          - "0x21b82AA7149c8Fd0562E78b740937442FfD43094"
+          - "0xcD0cDa37f68a6758f86a4e2910E60174af1190B5"
+          - "0x59F8D74Fe49d5ebEAc069E3baf07eB4b614BD5A7"
+          - "0x28939ef21690Fe8358E93d661d1ce6d7fA9154F3"
+          - "0xd0e99d6A51201C24421cD6DAfFFeE4f0E08BCd91"
+          - "0xeF83852FaBd22bda23857abF171e05Bae9463F95"
+          - "0x62c89F5768D0FeC0915fb614C5eDd9fdeaA2A3fd"
         getModulesPaginated:
           - args: ["0x0000000000000000000000000000000000000001", 100]
             result: [[], "0x0000000000000000000000000000000000000001"]
@@ -789,8 +794,14 @@ l1:
       checks:
         VERSION: "1.4.1"
         getChainId: 1
-        getThreshold: 1
-        getOwners: [*committeeSigner]
+        getThreshold: 3
+        getOwners:
+          - "0x9D557BDA79f6F4785C88997Ac180FFe1c3d0A62b"
+          - "0xd0e99d6A51201C24421cD6DAfFFeE4f0E08BCd91"
+          - "0x912e21CdA3D7012146da4Df33309d860a9eb0bEb"
+          - "0xeD20740c4cE9A61CE41bb3954186aFa0F5F80D9b"
+          - "0xeF83852FaBd22bda23857abF171e05Bae9463F95"
+          - "0x62c89F5768D0FeC0915fb614C5eDd9fdeaA2A3fd"
         getModulesPaginated:
           - args: ["0x0000000000000000000000000000000000000001", 100]
             result: [[], "0x0000000000000000000000000000000000000001"]
@@ -821,8 +832,15 @@ l1:
       checks:
         VERSION: "1.4.1"
         getChainId: 1
-        getThreshold: 1
-        getOwners: [*committeeSigner]
+        getThreshold: 5
+        getOwners:
+          - "0x21b82AA7149c8Fd0562E78b740937442FfD43094"
+          - "0xcD0cDa37f68a6758f86a4e2910E60174af1190B5"
+          - "0x59F8D74Fe49d5ebEAc069E3baf07eB4b614BD5A7"
+          - "0x28939ef21690Fe8358E93d661d1ce6d7fA9154F3"
+          - "0xd0e99d6A51201C24421cD6DAfFFeE4f0E08BCd91"
+          - "0xeF83852FaBd22bda23857abF171e05Bae9463F95"
+          - "0x62c89F5768D0FeC0915fb614C5eDd9fdeaA2A3fd"
         getModulesPaginated:
           - args: ["0x0000000000000000000000000000000000000001", 100]
             result: [[], "0x0000000000000000000000000000000000000001"]
