@@ -11,8 +11,13 @@ import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
 import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
 import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
-import {ProtocolDeployer} from "../../script/lib/ProtocolDeployer.sol";
-import {ProtocolConfig, ProtocolAddresses, ExitBookConfig} from "../../script/deployment/DeploymentTypes.sol";
+import {
+    CoreConfig,
+    ExitBookAddresses,
+    ExitBooksConfig,
+    ProtocolAddresses,
+    ProtocolDeployer
+} from "../../script/lib/ProtocolDeployer.sol";
 
 contract CircuitBreakerConfigStub {
     address public immutable ADMIN;
@@ -23,12 +28,23 @@ contract CircuitBreakerConfigStub {
 }
 
 contract ProtocolDeployerHarness is ProtocolDeployer {
-    function deployBackbone(ProtocolConfig memory cfg) external returns (ProtocolAddresses memory) {
-        return _deployBackbone(cfg, address(this));
+    /// @dev The backbone for `agent` and `executor` over `circuitBreaker`; the CircuitBreaker durations go unused.
+    function deployBackbone(address agent, address executor, address circuitBreaker, address resealManager)
+        external
+        returns (ProtocolAddresses memory)
+    {
+        CoreConfig memory c;
+        c.admin = agent;
+        c.manager = executor;
+        c.resealManager = resealManager;
+        return _deployBackbone(c, circuitBreaker, address(this));
     }
 
-    function deployExitBooks(ExitBookConfig memory cfg) external returns (address morpho, address erc4626) {
-        return _deployExitBooks(cfg, address(this));
+    function deployExitBooks(ProtocolAddresses memory p, ExitBooksConfig memory c)
+        external
+        returns (ExitBookAddresses memory)
+    {
+        return _deployExitBooks(p, c, address(this));
     }
 
     function requireCircuitBreakerPolicy(address circuitBreaker, address executor) external view {
@@ -71,28 +87,18 @@ contract ProtocolDeployerTest is Test {
 
     function test_deployBackbone_setsCoreFeeRecipientToAgent() external {
         address agent = makeAddr("agent");
-        ProtocolConfig memory cfg = ProtocolConfig({
-            agent: agent,
-            evmScriptExecutor: executor,
-            circuitBreaker: address(new CircuitBreakerConfigStub(executor)),
-            resealManager: makeAddr("resealManager")
-        });
-
-        ProtocolAddresses memory deployment = deployer.deployBackbone(cfg);
+        ProtocolAddresses memory deployment = deployer.deployBackbone(
+            agent, executor, address(new CircuitBreakerConfigStub(executor)), makeAddr("resealManager")
+        );
 
         assertEq(ILidoLend(deployment.core).feeRecipient(), agent);
     }
 
     function test_deployBackbone_assignsFeeManagerToExecutorOnly() external {
         address agent = makeAddr("agent");
-        ProtocolConfig memory cfg = ProtocolConfig({
-            agent: agent,
-            evmScriptExecutor: executor,
-            circuitBreaker: address(new CircuitBreakerConfigStub(executor)),
-            resealManager: makeAddr("resealManager")
-        });
-
-        ProtocolAddresses memory deployment = deployer.deployBackbone(cfg);
+        ProtocolAddresses memory deployment = deployer.deployBackbone(
+            agent, executor, address(new CircuitBreakerConfigStub(executor)), makeAddr("resealManager")
+        );
         LidoLendOwner facade = LidoLendOwner(deployment.ownerFacade);
         bytes32 role = facade.FEE_MANAGER_ROLE();
 
@@ -107,12 +113,7 @@ contract ProtocolDeployerTest is Test {
     function test_deployBackbone_deployerKeepsNoAuthority() external {
         address agent = makeAddr("agent");
         ProtocolAddresses memory deployment = deployer.deployBackbone(
-            ProtocolConfig({
-                agent: agent,
-                evmScriptExecutor: executor,
-                circuitBreaker: address(new CircuitBreakerConfigStub(executor)),
-                resealManager: makeAddr("resealManager")
-            })
+            agent, executor, address(new CircuitBreakerConfigStub(executor)), makeAddr("resealManager")
         );
 
         assertEq(OssifiableProxy(payable(deployment.core)).proxy__getAdmin(), agent, "core proxy admin");
@@ -139,53 +140,54 @@ contract ProtocolDeployerTest is Test {
     function test_deployExitBooks_assignsPauserAndLeavesResumerEmpty() external {
         address pauser = makeAddr("exitBookPauser");
 
-        (address morpho, address erc4626) = deployer.deployExitBooks(_exitBookConfig(pauser));
+        ExitBookAddresses memory books = deployer.deployExitBooks(_protocol(), _exitBooksConfig(pauser));
 
-        _assertExitBookPauseRoles(ExitBookBase(morpho), pauser);
-        _assertExitBookPauseRoles(ExitBookBase(erc4626), pauser);
+        _assertExitBookPauseRoles(ExitBookBase(books.morpho), pauser);
+        _assertExitBookPauseRoles(ExitBookBase(books.erc4626), pauser);
     }
 
     function test_deployExitBooks_handsOverRolesAndInitializesZeroFee() external {
-        ExitBookConfig memory cfg = _exitBookConfig(makeAddr("exitBookPauser"));
+        ExitBooksConfig memory c = _exitBooksConfig(makeAddr("exitBookPauser"));
 
-        (address morpho, address erc4626) = deployer.deployExitBooks(cfg);
+        ExitBookAddresses memory books = deployer.deployExitBooks(_protocol(), c);
 
-        _assertExitBookHandover(ExitBookBase(morpho), cfg);
-        _assertExitBookHandover(ExitBookBase(erc4626), cfg);
+        _assertExitBookHandover(ExitBookBase(books.morpho), c);
+        _assertExitBookHandover(ExitBookBase(books.erc4626), c);
     }
 
     function testRevert_deployExitBooks_missingPauser() external {
         vm.expectRevert(ProtocolDeployer.MissingExitBookPauser.selector);
-        deployer.deployExitBooks(_exitBookConfig(address(0)));
+        deployer.deployExitBooks(_protocol(), _exitBooksConfig(address(0)));
     }
 
     function testRevert_deployExitBooks_pauserIsDeployer() external {
         vm.expectRevert(ProtocolDeployer.ExitBookPauserCannotBeDeployer.selector);
-        deployer.deployExitBooks(_exitBookConfig(address(deployer)));
+        deployer.deployExitBooks(_protocol(), _exitBooksConfig(address(deployer)));
     }
 
     function testRevert_deployExitBooks_pauserIsAgent() external {
-        ExitBookConfig memory cfg = _exitBookConfig(address(0xA11CE));
+        ExitBooksConfig memory c = _exitBooksConfig(address(0xA11CE));
 
         vm.expectRevert(ProtocolDeployer.ExitBookPauserCannotBeAgent.selector);
-        deployer.deployExitBooks(cfg);
+        deployer.deployExitBooks(_protocol(), c);
     }
 
     function testRevert_deployExitBooks_pauserIsExecutor() external {
-        ExitBookConfig memory cfg = _exitBookConfig(address(0xE0E0));
+        ExitBooksConfig memory c = _exitBooksConfig(address(0xE0E0));
 
         vm.expectRevert(ProtocolDeployer.ExitBookPauserCannotBeExecutor.selector);
-        deployer.deployExitBooks(cfg);
+        deployer.deployExitBooks(_protocol(), c);
     }
 
-    function _exitBookConfig(address pauser) private pure returns (ExitBookConfig memory cfg) {
-        cfg = ExitBookConfig({
-            agent: address(0xA11CE),
-            evmScriptExecutor: address(0xE0E0),
-            pauser: pauser,
-            core: address(0xC0DE),
-            maxRequestLifetime: 365 days
-        });
+    /// @dev The protocol the books are deployed over: the Agent, the EVMScriptExecutor and the core.
+    function _protocol() private pure returns (ProtocolAddresses memory p) {
+        p.agent = address(0xA11CE);
+        p.executor = address(0xE0E0);
+        p.core = address(0xC0DE);
+    }
+
+    function _exitBooksConfig(address pauser) private pure returns (ExitBooksConfig memory c) {
+        c = ExitBooksConfig({pauser: pauser, maxRequestLifetime: 365 days});
     }
 
     function _assertSoleMember(address target, bytes32 role, address member) private view {
@@ -201,15 +203,16 @@ contract ProtocolDeployerTest is Test {
         assertEq(book.getRoleMemberCount(book.RESUMER_ROLE()), 0);
     }
 
-    function _assertExitBookHandover(ExitBookBase book, ExitBookConfig memory cfg) private view {
+    function _assertExitBookHandover(ExitBookBase book, ExitBooksConfig memory c) private view {
+        ProtocolAddresses memory p = _protocol();
         assertEq(book.getRoleMemberCount(book.DEFAULT_ADMIN_ROLE()), 1);
-        assertTrue(book.hasRole(book.DEFAULT_ADMIN_ROLE(), cfg.agent));
+        assertTrue(book.hasRole(book.DEFAULT_ADMIN_ROLE(), p.agent));
         assertEq(book.getRoleMemberCount(book.ALLOWLIST_MANAGER_ROLE()), 1);
-        assertTrue(book.hasRole(book.ALLOWLIST_MANAGER_ROLE(), cfg.evmScriptExecutor));
+        assertTrue(book.hasRole(book.ALLOWLIST_MANAGER_ROLE(), p.executor));
         assertEq(book.getRoleMemberCount(book.FEE_MANAGER_ROLE()), 0);
         assertEq(book.getRoleMemberCount(book.RECOVERER_ROLE()), 0);
-        assertEq(book.feeRecipient(), cfg.agent);
+        assertEq(book.feeRecipient(), p.agent);
         assertEq(book.serviceFee(), 0);
-        _assertExitBookPauseRoles(book, cfg.pauser);
+        _assertExitBookPauseRoles(book, c.pauser);
     }
 }

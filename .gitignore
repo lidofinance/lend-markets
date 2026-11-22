@@ -25,5 +25,6 @@
 
 # Per-run deploy artifacts (dated registries, activation plans, resolver records) — committed only when explicitly selected.
 /deployed/*
-!deployed/hoodi-testnet
+!deployed/hoodi
+!deployed/mainnet
 !deployed/.gitkeep

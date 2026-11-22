@@ -480,7 +480,7 @@ contract BorrowShareInflationTest is LidoLendSetup {
         MockERC20 loan = new MockERC20("Loan6", "LOAN6", 6);
         MockERC20 collateral = new MockERC20("Collateral", "COLL", 18);
         DeployConfig memory cfg = _defaultConfig(address(loan), address(collateral), address(collateral));
-        cfg.lltv = 0.86e18; // the LLTV in `script/config/markets/fork-usdy-usdt.toml`
+        cfg.lltv = 0.86e18;
         Market storage m = _addMarket(cfg);
         MockPriceOracle(address(m.oracle)).setPrice(1.05e24); // 1 COLL = 1.05 LOAN
         (address h, uint256 hShares) = _atCapBook(m, 15 ether, 50e6);

@@ -11,7 +11,7 @@ import {IPausableUntil} from "../../src/interfaces/IPausableUntil.sol";
 import {PausableUntil} from "../../src/utils/PausableUntil.sol";
 import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
-import {ForkMarketStack} from "./helpers/ForkMarketStack.sol";
+import {ForkStack} from "./helpers/ForkStack.sol";
 
 /// @dev The deployed emergency-pause manager (`lib/circuit-breaker`, own solc). `pause` is single-use per
 ///      registration: the pauser is unregistered as it fires.
@@ -29,7 +29,7 @@ interface ICircuitBreaker {
 /// @notice The deployed pause path on one market: the circuit breaker fires as its registered pauser, single-use,
 ///         and the reseal manager pauses and is the only resumer. Paused, hooked actions refuse, the vault's limits
 ///         read zero, share transfers still work, and interest is booked only on the first action after resume.
-abstract contract PauseLifecycleForkBase is ForkMarketStack {
+contract PauseLifecycleForkTest is ForkStack {
     using MarketActions for Market;
     using MathLib for uint256;
 
@@ -39,14 +39,11 @@ abstract contract PauseLifecycleForkBase is ForkMarketStack {
     address internal resealManager;
     address internal STRANGER;
 
-    constructor(string memory role) ForkMarketStack(role) {}
-
     function setUp() public {
-        _fork();
-        _bindRole();
-        circuitBreaker = ICircuitBreaker(forkDeployment.protocol.circuitBreaker);
+        _setUpTarget();
+        circuitBreaker = ICircuitBreaker(protocol.circuitBreaker);
         resealManager = _resealManager();
-        STRANGER = _freshActor(deployed, "pause.stranger");
+        STRANGER = _freshActor(market, "pause.stranger");
         _seedLenderAndBorrower();
     }
 
@@ -60,19 +57,19 @@ abstract contract PauseLifecycleForkBase is ForkMarketStack {
         address pauser = _livePauserOrSkip();
         uint256 duration = circuitBreaker.pauseDuration();
 
-        vm.expectEmit(true, true, true, true, address(deployed.controller));
+        vm.expectEmit(true, true, true, true, address(market.controller));
         emit PausableUntil.Paused(duration);
         vm.expectEmit(true, true, true, true, address(circuitBreaker));
-        emit ICircuitBreaker.PauseTriggered(address(deployed.controller), pauser, duration);
+        emit ICircuitBreaker.PauseTriggered(address(market.controller), pauser, duration);
         vm.prank(pauser);
-        circuitBreaker.pause(address(deployed.controller));
+        circuitBreaker.pause(address(market.controller));
 
         assertEq(
-            IPausableUntil(address(deployed.controller)).getResumeSinceTimestamp(),
+            IPausableUntil(address(market.controller)).getResumeSinceTimestamp(),
             block.timestamp + duration,
             "paused for exactly the circuit breaker's duration"
         );
-        assertEq(circuitBreaker.getPauser(address(deployed.controller)), address(0), "registration consumed");
+        assertEq(circuitBreaker.getPauser(address(market.controller)), address(0), "registration consumed");
     }
 
     function testRevert_cbPause_secondPause_SenderNotPauser() public {
@@ -81,13 +78,13 @@ abstract contract PauseLifecycleForkBase is ForkMarketStack {
 
         vm.prank(pauser);
         vm.expectRevert(ICircuitBreaker.SenderNotPauser.selector);
-        circuitBreaker.pause(address(deployed.controller));
+        circuitBreaker.pause(address(market.controller));
     }
 
     function testRevert_cbPause_byStranger() public {
         vm.prank(STRANGER);
         vm.expectRevert(ICircuitBreaker.SenderNotPauser.selector);
-        circuitBreaker.pause(address(deployed.controller));
+        circuitBreaker.pause(address(market.controller));
     }
 
     // ---
@@ -95,38 +92,38 @@ abstract contract PauseLifecycleForkBase is ForkMarketStack {
     // ---
 
     function test_resealPauseFor_thenResume() public {
-        vm.expectEmit(true, true, true, true, address(deployed.controller));
+        vm.expectEmit(true, true, true, true, address(market.controller));
         emit PausableUntil.Paused(SHORT_PAUSE);
         vm.prank(resealManager);
-        deployed.controller.pauseFor(SHORT_PAUSE);
+        market.controller.pauseFor(SHORT_PAUSE);
         assertEq(
-            IPausableUntil(address(deployed.controller)).getResumeSinceTimestamp(),
+            IPausableUntil(address(market.controller)).getResumeSinceTimestamp(),
             block.timestamp + SHORT_PAUSE,
             "paused for the requested duration"
         );
 
-        vm.expectEmit(true, true, true, true, address(deployed.controller));
+        vm.expectEmit(true, true, true, true, address(market.controller));
         emit PausableUntil.Resumed();
         _resume();
-        assertFalse(IPausableUntil(address(deployed.controller)).isPaused(), "live again");
+        assertFalse(IPausableUntil(address(market.controller)).isPaused(), "live again");
     }
 
     function test_resealResume_endsCbPause_depositWorksAgain() public {
         _pauseViaCircuitBreaker();
         _resume();
 
-        uint256 topUp = _loanUnit(deployed);
-        deal(address(deployed.loanToken), LENDER, topUp);
+        uint256 topUp = _oneLoanToken();
+        deal(address(market.loanToken), LENDER, topUp);
         market.vaultDeposit(LENDER, topUp);
     }
 
     function test_finitePause_expiresOnItsOwn() public {
-        _pauseViaResealManager(deployed, SHORT_PAUSE);
+        _pauseViaResealManager(SHORT_PAUSE);
         vm.warp(block.timestamp + SHORT_PAUSE + 1);
 
-        assertFalse(IPausableUntil(address(deployed.controller)).isPaused(), "pause lapsed without a resume");
-        uint256 topUp = _loanUnit(deployed);
-        deal(address(deployed.loanToken), LENDER, topUp);
+        assertFalse(IPausableUntil(address(market.controller)).isPaused(), "pause lapsed without a resume");
+        uint256 topUp = _oneLoanToken();
+        deal(address(market.loanToken), LENDER, topUp);
         market.vaultDeposit(LENDER, topUp);
     }
 
@@ -136,60 +133,60 @@ abstract contract PauseLifecycleForkBase is ForkMarketStack {
 
     /// @dev One hooked action stands for all of them: the controller's own error, from inside the core call.
     function testRevert_paused_borrow() public {
-        _pauseViaResealManager(deployed, SHORT_PAUSE);
+        _pauseViaResealManager(SHORT_PAUSE);
         vm.prank(BORROWER);
         vm.expectRevert(PausableUntil.ResumedExpected.selector);
-        deployed.core.borrow(deployed.params, 1, 0, BORROWER, BORROWER);
+        market.core.borrow(market.params, 1, 0, BORROWER, BORROWER);
     }
 
     function test_paused_vaultLimitsAreZero() public {
-        _pauseViaResealManager(deployed, SHORT_PAUSE);
-        assertEq(deployed.vault.maxDeposit(LENDER), 0, "maxDeposit");
-        assertEq(deployed.vault.maxMint(LENDER), 0, "maxMint");
-        assertEq(deployed.vault.maxWithdraw(LENDER), 0, "maxWithdraw");
-        assertEq(deployed.vault.maxRedeem(LENDER), 0, "maxRedeem");
+        _pauseViaResealManager(SHORT_PAUSE);
+        assertEq(market.vault.maxDeposit(LENDER), 0, "maxDeposit");
+        assertEq(market.vault.maxMint(LENDER), 0, "maxMint");
+        assertEq(market.vault.maxWithdraw(LENDER), 0, "maxWithdraw");
+        assertEq(market.vault.maxRedeem(LENDER), 0, "maxRedeem");
     }
 
     function testRevert_paused_vaultDeposit_maxGuard() public {
-        uint256 assets = _loanUnit(deployed);
-        deal(address(deployed.loanToken), LENDER, assets);
-        _approve(address(deployed.loanToken), LENDER, address(deployed.vault), assets);
-        _pauseViaResealManager(deployed, SHORT_PAUSE);
+        uint256 assets = _oneLoanToken();
+        deal(address(market.loanToken), LENDER, assets);
+        _approve(address(market.loanToken), LENDER, address(market.vault), assets);
+        _pauseViaResealManager(SHORT_PAUSE);
 
         vm.prank(LENDER);
         vm.expectRevert(
             abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxDeposit.selector, LENDER, assets, 0)
         );
-        deployed.vault.deposit(assets, LENDER);
+        market.vault.deposit(assets, LENDER);
     }
 
     function test_paused_shareTransferStillWorks() public {
-        _pauseViaResealManager(deployed, SHORT_PAUSE);
+        _pauseViaResealManager(SHORT_PAUSE);
         uint256 amount = lenderShares / 3;
         vm.prank(LENDER);
-        deployed.vault.transfer(STRANGER, amount);
-        assertEq(deployed.vault.balanceOf(STRANGER), amount, "shares moved");
-        assertEq(deployed.vault.balanceOf(LENDER), lenderShares - amount, "sender debited");
+        market.vault.transfer(STRANGER, amount);
+        assertEq(market.vault.balanceOf(STRANGER), amount, "shares moved");
+        assertEq(market.vault.balanceOf(LENDER), lenderShares - amount, "sender debited");
     }
 
     /// @dev Accrual is hooked, so a live pause refuses it; the first accrual after resume books the whole gap in one
     ///      step, sized by the IRM's rate for it.
     function test_paused_interestNotBookedUntilResume() public {
-        MorphoMarket memory before = deployed.core.market(deployed.id);
-        _pauseViaResealManager(deployed, 3 days);
+        MorphoMarket memory before = market.core.market(market.id);
+        _pauseViaResealManager(3 days);
         vm.warp(block.timestamp + 1 days);
 
         vm.expectRevert(PausableUntil.ResumedExpected.selector);
-        deployed.core.accrueInterest(deployed.params);
+        market.core.accrueInterest(market.params);
         _resume();
 
         uint256 elapsed = block.timestamp - before.lastUpdate;
-        uint256 rate = IIrm(deployed.params.irm).borrowRateView(deployed.params, before);
+        uint256 rate = IIrm(market.params.irm).borrowRateView(market.params, before);
         uint256 interest = uint256(before.totalBorrowAssets).wMulDown(rate.wTaylorCompounded(elapsed));
         assertGt(interest, 0, "setup: the gap must carry interest");
 
-        deployed.core.accrueInterest(deployed.params);
-        MorphoMarket memory resumed = deployed.core.market(deployed.id);
+        market.core.accrueInterest(market.params);
+        MorphoMarket memory resumed = market.core.market(market.id);
         assertEq(resumed.totalBorrowAssets, before.totalBorrowAssets + interest, "gap booked in one step");
         assertEq(resumed.lastUpdate, block.timestamp, "clock caught up");
     }
@@ -199,20 +196,20 @@ abstract contract PauseLifecycleForkBase is ForkMarketStack {
     // ---
 
     function testRevert_resume_byAgent() public {
-        _pauseViaResealManager(deployed, SHORT_PAUSE);
+        _pauseViaResealManager(SHORT_PAUSE);
         address agent = _admin();
-        bytes32 role = deployed.controller.RESUMER_ROLE();
+        bytes32 role = market.controller.RESUMER_ROLE();
         vm.prank(agent);
-        vm.expectRevert(_unauthorized(agent, role));
-        deployed.controller.resume();
+        vm.expectRevert(_missingRoleError(agent, role));
+        market.controller.resume();
     }
 
     function testRevert_pauseFor_byExecutor() public {
         address executor = _executor();
-        bytes32 role = deployed.controller.PAUSER_ROLE();
+        bytes32 role = market.controller.PAUSER_ROLE();
         vm.prank(executor);
-        vm.expectRevert(_unauthorized(executor, role));
-        deployed.controller.pauseFor(SHORT_PAUSE);
+        vm.expectRevert(_missingRoleError(executor, role));
+        market.controller.pauseFor(SHORT_PAUSE);
     }
 
     // ---
@@ -222,7 +219,7 @@ abstract contract PauseLifecycleForkBase is ForkMarketStack {
     /// @dev The controller's registered pauser, or a skip when its heartbeat has lapsed at the forked block: on a
     ///      production run that is the committee's liveness, not a code fact.
     function _livePauserOrSkip() internal returns (address pauser) {
-        pauser = circuitBreaker.getPauser(address(deployed.controller));
+        pauser = circuitBreaker.getPauser(address(market.controller));
         require(pauser != address(0), "PauseLifecycle: no pauser registered for the controller");
         if (!circuitBreaker.isPauserLive(pauser)) vm.skip(true, "PauseLifecycle: pauser heartbeat has lapsed");
     }
@@ -230,15 +227,11 @@ abstract contract PauseLifecycleForkBase is ForkMarketStack {
     function _pauseViaCircuitBreaker() internal returns (address pauser) {
         pauser = _livePauserOrSkip();
         vm.prank(pauser);
-        circuitBreaker.pause(address(deployed.controller));
+        circuitBreaker.pause(address(market.controller));
     }
 
     function _resume() internal {
         vm.prank(resealManager);
-        deployed.controller.resume();
+        market.controller.resume();
     }
 }
-
-contract PauseLifecycleWethWstethForkTest is PauseLifecycleForkBase("weth-wsteth") {}
-
-contract PauseLifecycleUsdyUsdtForkTest is PauseLifecycleForkBase("usdy-usdt") {}

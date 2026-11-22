@@ -103,7 +103,7 @@ The examples use illustrative values, not any market's: bounds of +0.05% and −
 | `reanchorDelay` | `uint40`, seconds | `x ≥ MIN_REANCHOR_DELAY` (1 hour), `e^(maxAnchorContinuousRiseRate × x / (1e18 × 365 days)) − 1 ≤ maxPriceAboveAnchor / 1e18` and `1 − e^(−maxAnchorContinuousFallRate × x / (1e18 × 365 days)) ≤ maxPriceBelowAnchor / 1e18` | how long a pending anchor waits before a re-anchor |
 | `reanchorWindow` | `uint40`, seconds | `x ≥ MIN_REANCHOR_WINDOW` (1 hour) | how long after the delay a re-anchor may come before the pending anchor expires |
 
-The contract does not check the [sizing rule](#choosing-values), because it does not know the LLTV of the markets that read it. The deployment preflight checks the rule at the LLTV of the market, and the acceptance suite makes the same check on the live deployment. The manager must keep the rule in each later `setParameters` call. No contract makes this check, so a too-wide corridor from a `setParameters` call stays until the manager corrects it.
+The contract does not check the [sizing rule](#choosing-values), because it does not know the LLTV of the markets that read it. The parameters at deployment must keep the rule at the LLTV of the market, and the manager must keep it in each later `setParameters` call. No contract makes this check, so a too-wide corridor from a `setParameters` call stays until the manager corrects it.
 
 Every `e^y − 1` in the contract is the sum of the first three Taylor terms, `y + y²/2 + y³/6`, each rounded down. This sum is never more than `e^y − 1`. Every `1 − e^(−y)` is `c / (1 + c)`, rounded down, where `c` is that sum for `y`. This value is never more than `1 − e^(−y)`.
 
@@ -247,7 +247,7 @@ A freeze stops borrowing but leaves liquidation and settlement running, and a pa
 
 ## Choosing values
 
-The contract does not check the sizing rule below. The deployment preflight checks it at the LLTV of each market it creates. The manager must keep it in each `setParameters` call, for the highest LLTV among the markets that read the oracle.
+The contract does not check the sizing rule below. The parameters at deployment and in each `setParameters` call must keep it, for the highest LLTV among the markets that read the oracle.
 
 | Parameter | At least | At most |
 |---|---|---|

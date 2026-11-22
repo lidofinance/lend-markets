@@ -5,8 +5,6 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 
 import {IPausableUntil} from "../../src/interfaces/IPausableUntil.sol";
 import {PausableUntil} from "../../src/utils/PausableUntil.sol";
-import {CircuitBreakerParameters} from "../../script/deployment/DeploymentTypes.sol";
-import {Protocol as MainnetProtocol} from "../../script/deployment/mainnet/artifacts/Protocol.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
 import {Market} from "../setup/Types.sol";
@@ -45,7 +43,13 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
     using MarketActions for Market;
 
     ICircuitBreaker internal circuitBreaker;
-    CircuitBreakerParameters internal profile;
+    // The CircuitBreaker's pause and heartbeat bounds, at the mainnet values.
+    uint256 internal constant MIN_PAUSE_DURATION = 5 days;
+    uint256 internal constant MAX_PAUSE_DURATION = 60 days;
+    uint256 internal constant MIN_HEARTBEAT_INTERVAL = 30 days;
+    uint256 internal constant MAX_HEARTBEAT_INTERVAL = 1095 days;
+    uint256 internal constant INITIAL_PAUSE_DURATION = 21 days;
+    uint256 internal constant INITIAL_HEARTBEAT_INTERVAL = 365 days;
 
     /// @dev CircuitBreaker `ADMIN`: the EVMScriptExecutor in production.
     address internal executor;
@@ -68,18 +72,17 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
         resealManager = _actor("resealManager");
         lender = _actor("lender");
 
-        profile = MainnetProtocol.circuitBreakerParameters();
         circuitBreaker = ICircuitBreaker(
             deployCode(
                 "CircuitBreaker.sol:CircuitBreaker",
                 abi.encode(
                     executor,
-                    profile.minPauseDuration,
-                    profile.maxPauseDuration,
-                    profile.minHeartbeatInterval,
-                    profile.maxHeartbeatInterval,
-                    profile.initialPauseDuration,
-                    profile.initialHeartbeatInterval
+                    MIN_PAUSE_DURATION,
+                    MAX_PAUSE_DURATION,
+                    MIN_HEARTBEAT_INTERVAL,
+                    MAX_HEARTBEAT_INTERVAL,
+                    INITIAL_PAUSE_DURATION,
+                    INITIAL_HEARTBEAT_INTERVAL
                 )
             )
         );
@@ -125,7 +128,7 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
         Market storage a = _a();
         Market storage b = _b();
         uint256 duration = circuitBreaker.pauseDuration();
-        assertEq(duration, profile.initialPauseDuration, "setup: profile duration");
+        assertEq(duration, INITIAL_PAUSE_DURATION, "setup: profile duration");
 
         vm.expectEmit(true, true, true, true, address(a.controller));
         emit PausableUntil.Paused(duration);
@@ -228,7 +231,7 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
         vm.prank(resealManager);
         a.controller.resume();
         uint256 resumeSince = _pauseA();
-        assertEq(resumeSince, block.timestamp + profile.initialPauseDuration, "committee pause after the resume");
+        assertEq(resumeSince, block.timestamp + INITIAL_PAUSE_DURATION, "committee pause after the resume");
     }
 
     // ── Re-arm and liveness ──
@@ -245,18 +248,18 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
         circuitBreaker.registerPauser(_controllerA(), committee);
         assertEq(
             circuitBreaker.heartbeatExpiry(committee),
-            block.timestamp + profile.initialHeartbeatInterval,
+            block.timestamp + INITIAL_HEARTBEAT_INTERVAL,
             "fresh heartbeat window"
         );
 
         uint256 resumeSince = _pauseA();
-        assertEq(resumeSince, block.timestamp + profile.initialPauseDuration, "second pause after the re-arm");
+        assertEq(resumeSince, block.timestamp + INITIAL_PAUSE_DURATION, "second pause after the re-arm");
     }
 
     /// @dev Liveness ends at the expiry second. A heartbeat one second earlier extends it by the interval. An
     ///      expired pauser stays registered but cannot pause or heartbeat until the admin registers it again.
     function test_cbHeartbeat_expiresAtDeadline_adminRegistrationRevives() public {
-        uint256 interval = profile.initialHeartbeatInterval;
+        uint256 interval = INITIAL_HEARTBEAT_INTERVAL;
         uint256 expiry = circuitBreaker.heartbeatExpiry(committee);
         assertEq(expiry, block.timestamp + interval, "setup: registration opened the window");
 
@@ -289,7 +292,7 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
     ///      Through the re-arm route, the admin chains maximum pauses with no gap, one admin action per pause.
     function test_adminRearmAtResume_chainsBackToBackMaxPauses() public {
         uint256 maxPause = circuitBreaker.MAX_PAUSE_DURATION();
-        assertEq(maxPause, profile.maxPauseDuration, "setup: profile bound");
+        assertEq(maxPause, MAX_PAUSE_DURATION, "setup: profile bound");
         vm.prank(executor);
         circuitBreaker.setPauseDuration(maxPause);
         uint256 start = block.timestamp;
@@ -320,7 +323,7 @@ contract CircuitBreakerPauseTest is LidoLendSetup {
         vm.stopPrank();
         assertEq(_pausable(a).getResumeSinceTimestamp(), type(uint256).max, "indefinite pause");
 
-        vm.warp(block.timestamp + profile.maxPauseDuration + 1);
+        vm.warp(block.timestamp + MAX_PAUSE_DURATION + 1);
         assertTrue(_pausable(a).isPaused(), "still paused past the CircuitBreaker bound");
     }
 }

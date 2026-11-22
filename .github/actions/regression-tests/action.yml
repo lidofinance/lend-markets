@@ -1,5 +1,5 @@
 name: Lido Lend regression tests
-description: Prepare missing or inert markets on a fork of the supplied RPC and run the lending fork suites
+description: Prepare missing or inert markets on a fork of the supplied RPC, run the lending fork suites and check the network's state-mate configs
 inputs:
   rpc_url:
     description: Caller-prepared post-vote RPC to fork
@@ -8,7 +8,7 @@ inputs:
     description: Lending repository to check out
     default: lidofinance/lend-markets
   ref:
-    description: Lending revision with matching deployment artifacts and Solidity recipes
+    description: Lending revision with matching deploy scripts
     default: main
   path:
     description: Checkout directory
@@ -17,8 +17,11 @@ inputs:
     description: Deprecated compatibility input; preparation uses Solidity recipes
     default: mainnet
   run:
-    description: Recorded deployment under script/deployment/<run>/artifacts
+    description: Recorded network, mainnet or hoodi
     default: mainnet
+  etherscan_token:
+    description: Etherscan API key; the mainnet state-mate configs read contracts' deployment blocks through it
+    default: ''
 runs:
   using: composite
   steps:
@@ -36,13 +39,32 @@ runs:
     - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
       with:
         version: ${{ steps.foundry.outputs.version }}
-    - name: Prepare deployment and run regression tests
+    - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+      with:
+        node-version: 24
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      with:
+        repository: lidofinance/state-mate
+        ref: 835dbfeea055638c205338c777b8c2914289d799 # main 2026-09-11
+        path: lido-lend-state-mate
+        persist-credentials: false
+    - name: Install state-mate
+      shell: bash
+      working-directory: lido-lend-state-mate
+      run: |
+        corepack enable
+        yarn install --immutable
+    - name: Prepare deployment, run regression tests and state-mate
       shell: bash
       working-directory: ${{ inputs.path }}
       env:
         RPC_URL: ${{ inputs.rpc_url }}
         RUN: ${{ inputs.run }}
         TEST_SEED: '1'
+        STATE_MATE_DIR: ${{ github.workspace }}/lido-lend-state-mate
+        # state-mate reads the key for ABIs from the config's variable and for role scans from ETHERSCAN_TOKEN.
+        ETHERSCAN_EXPLORER_TOKEN: ${{ inputs.etherscan_token }}
+        ETHERSCAN_TOKEN: ${{ inputs.etherscan_token }}
       run: |
         fork_block=$(cast block-number --rpc-url "$RPC_URL")
         anvil --fork-url "$RPC_URL" --fork-block-number "$fork_block" \
@@ -55,7 +77,12 @@ runs:
         for i in {1..60}; do
           kill -0 "$anvil_pid" 2>/dev/null || { echo "::error::Anvil exited before startup"; exit 1; }
           if [[ $(cast block-number --rpc-url "$RPC_URL" 2>/dev/null) == "$fork_block" ]]; then
-            make test-fork RUN="$RUN"
+            make -k test-fork RUN="$RUN"
+            # Each package's state-mate.yaml holds its expected current state; the configs name their RPC variable.
+            export MAINNET_RPC_URL="$RPC_URL" HOODI_RPC_URL="$RPC_URL"
+            for config in $(find "$PWD/deployed/$RUN" -name state-mate.yaml | sort); do
+              (cd "$STATE_MATE_DIR" && yarn start "$config")
+            done
             exit 0
           fi
           sleep 1
