@@ -4,6 +4,7 @@ pragma solidity 0.8.36;
 import {Id, MarketParams} from "@lido-lend/src/interfaces/IMorpho.sol";
 import {AdaptiveCurveParams} from "@lido-lend-irm/src/adaptive-curve-irm/interfaces/IAdaptiveCurveTypes.sol";
 import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
+import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 
 struct ProtocolConfig {
     address agent;
@@ -84,6 +85,28 @@ struct ProtocolParameters {
     CircuitBreakerParameters circuitBreakerParameters;
 }
 
+/// @dev The adapter of a trailing anchor oracle.
+enum TrailingAnchorKind {
+    Usdy,
+    Centrifuge
+}
+
+/// @dev A trailing anchor oracle of a market: the adapter and its source, the market's tokens, the parameters at
+///      launch and the range that the seed price must be in. `poolId`, `shareClassId` and `maxPriceAge` are for the
+///      Centrifuge adapter.
+struct TrailingAnchorPriceFeedSpec {
+    TrailingAnchorKind kind;
+    address source;
+    uint64 poolId;
+    bytes16 shareClassId;
+    uint256 maxPriceAge;
+    address loanToken;
+    address collateralToken;
+    TrailingAnchorOracleBase.Parameters parameters;
+    uint256 seedMinPrice;
+    uint256 seedMaxPrice;
+}
+
 struct PriceFeedRecord {
     address wstEth;
     address usdySource;
@@ -92,6 +115,7 @@ struct PriceFeedRecord {
     address collateralToken;
     uint256 minPrice;
     uint256 maxPrice;
+    TrailingAnchorPriceFeedSpec trailingAnchor;
 }
 
 struct RecordedMarket {

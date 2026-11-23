@@ -1,0 +1,1870 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+pragma solidity 0.8.36;
+
+import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+
+import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
+import {UsdyNavOracle} from "../../src/oracle/UsdyNavOracle.sol";
+import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
+
+import {
+    TrailingAnchorOracleModel,
+    TrailingAnchorOracleState,
+    TrailingAnchorOracleUpdate
+} from "../setup/TrailingAnchorOracleModel.sol";
+import {IOssifiableProxy} from "../setup/IOssifiableProxy.sol";
+import {MockERC20} from "../setup/Mocks.sol";
+import {CentrifugeNavOracleFixture, NavOracleFixture, UsdyNavOracleFixture} from "../setup/NavOracleFixtures.sol";
+import {MockOndoPriceGetter, SourceDown} from "../setup/NavSourceMocks.sol";
+
+/// @notice `TrailingAnchorOracleBase` method by method, run once through each adapter over its source mock.
+/// @dev The loan token has 6 decimals, like USDC. Every `updateAnchor()` call goes through `_update()`, which checks
+///      the stored state and the exact logs against `TrailingAnchorOracleModel`; the key numbers are also written out
+///      with the bound, rate, floor and ceiling formulas in the tests, never read from the oracle.
+abstract contract TrailingAnchorOracleBaseTest is NavOracleFixture {
+    using TrailingAnchorOracleModel for TrailingAnchorOracleState;
+
+    uint256 internal constant WAD = 1e18;
+    uint256 internal constant YEAR = 365 days;
+    uint256 internal constant START = 1_760_000_000;
+    uint256 internal constant INITIAL_PRICE = 1.112233445566778899e18;
+    uint256 internal constant MAX_PRICE_ABOVE_ANCHOR = TrailingAnchorOracleModel.MAX_PRICE_ABOVE_ANCHOR;
+    uint256 internal constant MAX_PRICE_BELOW_ANCHOR = TrailingAnchorOracleModel.MAX_PRICE_BELOW_ANCHOR;
+    uint256 internal constant MAX_ANCHOR_CONTINUOUS_RISE_RATE =
+        TrailingAnchorOracleModel.MAX_ANCHOR_CONTINUOUS_RISE_RATE;
+    uint256 internal constant MAX_ANCHOR_CONTINUOUS_FALL_RATE =
+        TrailingAnchorOracleModel.MAX_ANCHOR_CONTINUOUS_FALL_RATE;
+    uint256 internal constant MAX_ANCHOR_BELOW_BASE = TrailingAnchorOracleModel.MAX_ANCHOR_BELOW_BASE;
+    uint256 internal constant MAX_ANCHOR_ABOVE_BASE = TrailingAnchorOracleModel.MAX_ANCHOR_ABOVE_BASE;
+    uint256 internal constant DELAY = TrailingAnchorOracleModel.REANCHOR_DELAY;
+    uint256 internal constant WINDOW = TrailingAnchorOracleModel.REANCHOR_WINDOW;
+    /// @dev The longest delay over which a rate of 0.06, compounded continuously, rises at most 0.05%:
+    ///      x + x²/2 + x³/6 ≤ 0.0005 for x = 0.06 × delay / 365 days, found with exact integer arithmetic. The
+    ///      linear estimate, bound / rate, gives 262,800 seconds.
+    uint256 internal constant LONGEST_DELAY_FOR_RISE = 262_734;
+    /// @dev The longest delay over which a rate of 0.01, compounded continuously, falls at most 0.1%:
+    ///      c / (1 + c) ≤ 0.001 for c = x + x²/2 + x³/6 and x = 0.01 × delay / 365 days, found with exact integer
+    ///      arithmetic. The linear estimate, bound / rate, gives 3,153,600 seconds.
+    uint256 internal constant LONGEST_DELAY_FOR_FALL = 3_155_177;
+    /// @dev The EIP-1967 implementation slot the proxy reads on every call.
+    bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
+    MockERC20 internal loan;
+    TrailingAnchorOracleBase internal oracle;
+    /// @dev Recomputed from the token decimals, not read from the oracle.
+    uint256 internal priceScale;
+
+    address internal admin = makeAddr("admin");
+    address internal manager = makeAddr("manager");
+    address internal priceAcceptor = makeAddr("priceAcceptor");
+    address internal anyone = makeAddr("anyone");
+
+    function setUp() public {
+        vm.warp(START);
+        _setUpSource();
+        source.setCurrentPrice(INITIAL_PRICE);
+        loan = new MockERC20("USD Coin", "USDC", 6);
+        priceScale = TrailingAnchorOracleModel.priceScale(6, IERC20Metadata(collateralToken).decimals());
+        oracle = _deployOracle(address(loan), admin, TrailingAnchorOracleModel.initializeCall(admin));
+        bytes32 managerRole = oracle.MANAGER_ROLE();
+        bytes32 priceAcceptorRole = oracle.PRICE_ACCEPTOR_ROLE();
+        vm.startPrank(admin);
+        oracle.grantRole(managerRole, manager);
+        oracle.grantRole(priceAcceptorRole, priceAcceptor);
+        vm.stopPrank();
+    }
+
+    // ---
+    // CONSTRUCTOR AND INITIALIZE
+    // ---
+
+    function testRevert_constructor_zeroLoanToken() public {
+        vm.expectRevert(TrailingAnchorOracleBase.ZeroAddress.selector);
+        _newImplementation(address(0));
+    }
+
+    function testRevert_constructor_disablesInitializers() public {
+        TrailingAnchorOracleBase impl = TrailingAnchorOracleBase(_newImplementation(address(loan)));
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        impl.initialize(admin, TrailingAnchorOracleModel.defaultParameters(), 0, type(uint256).max);
+    }
+
+    function test_initialize_seedsAnchor() public {
+        address impl = _newImplementation(address(loan));
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        vm.expectEmit();
+        emit TrailingAnchorOracleBase.ParametersSet(p);
+        vm.expectEmit();
+        emit TrailingAnchorOracleBase.AnchorSet(INITIAL_PRICE, uint40(START), true);
+        TrailingAnchorOracleBase fresh = TrailingAnchorOracleBase(
+            address(new OssifiableProxy(impl, admin, TrailingAnchorOracleModel.initializeCall(admin)))
+        );
+
+        TrailingAnchorOracleState memory s = TrailingAnchorOracleModel.read(fresh);
+        assertEq(s.anchorPrice, INITIAL_PRICE, "anchorPrice");
+        assertEq(s.anchorAt, START, "anchorAt");
+        assertEq(s.pricingResumesAt, 0, "no suspension");
+        assertEq(s.pendingAnchorPrice, 0, "no pending anchor price");
+        assertEq(s.pendingAnchorAt, 0, "no pending anchor time");
+        assertEq(s.basePrice, INITIAL_PRICE, "basePrice is the seed");
+        _assertParameters(s, p);
+        assertTrue(fresh.hasRole(fresh.DEFAULT_ADMIN_ROLE(), admin), "admin role");
+        assertEq(fresh.getRoleMemberCount(fresh.DEFAULT_ADMIN_ROLE()), 1, "one admin");
+        assertEq(fresh.getRoleMemberCount(fresh.MANAGER_ROLE()), 0, "manager role starts empty");
+        assertEq(fresh.getRoleMemberCount(fresh.PRICE_ACCEPTOR_ROLE()), 0, "price acceptor role starts empty");
+        assertEq(fresh.price(), INITIAL_PRICE * priceScale, "price is the current price at once");
+    }
+
+    function testRevert_initialize_zeroAdmin() public {
+        address impl = _newImplementation(address(loan));
+        vm.expectRevert(TrailingAnchorOracleBase.ZeroAddress.selector);
+        new OssifiableProxy(impl, admin, TrailingAnchorOracleModel.initializeCall(address(0)));
+    }
+
+    function testRevert_initialize_twice() public {
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        oracle.initialize(admin, TrailingAnchorOracleModel.defaultParameters(), 0, type(uint256).max);
+    }
+
+    function testRevert_initialize_sourceFails() public {
+        address impl = _newImplementation(address(loan));
+        bytes memory init = TrailingAnchorOracleModel.initializeCall(admin);
+        source.setCurrentPrice(0);
+        vm.expectRevert(TrailingAnchorOracleBase.ZeroPrice.selector);
+        new OssifiableProxy(impl, admin, init);
+        source.setCurrentPrice(INITIAL_PRICE);
+        source.setDown(true);
+        vm.expectRevert(SourceDown.selector);
+        new OssifiableProxy(impl, admin, init);
+    }
+
+    /// @dev The seed range is inclusive on both edges, as in `acceptPrice`.
+    function test_initialize_seedRangeEdgesInclusive() public {
+        address impl = _newImplementation(address(loan));
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        TrailingAnchorOracleBase low = TrailingAnchorOracleBase(
+            address(
+                new OssifiableProxy(
+                    impl, admin, TrailingAnchorOracleModel.initializeCall(admin, p, INITIAL_PRICE, INITIAL_PRICE + 1)
+                )
+            )
+        );
+        assertEq(low.anchorPrice(), INITIAL_PRICE, "seeded on the lower edge");
+        TrailingAnchorOracleBase high = TrailingAnchorOracleBase(
+            address(
+                new OssifiableProxy(
+                    impl, admin, TrailingAnchorOracleModel.initializeCall(admin, p, INITIAL_PRICE - 1, INITIAL_PRICE)
+                )
+            )
+        );
+        assertEq(high.anchorPrice(), INITIAL_PRICE, "seeded on the upper edge");
+    }
+
+    /// @dev A source value outside the seed range refuses the deployment, so a wrong value at deployment never
+    ///      becomes the anchor.
+    function testRevert_initialize_seedOutsideRange() public {
+        address impl = _newImplementation(address(loan));
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrailingAnchorOracleBase.UnexpectedPrice.selector, INITIAL_PRICE, INITIAL_PRICE + 1, INITIAL_PRICE + 2
+            )
+        );
+        new OssifiableProxy(
+            impl, admin, TrailingAnchorOracleModel.initializeCall(admin, p, INITIAL_PRICE + 1, INITIAL_PRICE + 2)
+        );
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrailingAnchorOracleBase.UnexpectedPrice.selector, INITIAL_PRICE, INITIAL_PRICE - 2, INITIAL_PRICE - 1
+            )
+        );
+        new OssifiableProxy(
+            impl, admin, TrailingAnchorOracleModel.initializeCall(admin, p, INITIAL_PRICE - 2, INITIAL_PRICE - 1)
+        );
+    }
+
+    /// @dev `initialize` validates as `setParameters` does: every invalid case of the validator test refuses it.
+    function testRevert_initialize_invalidParameters() public {
+        address impl = _newImplementation(address(loan));
+        (TrailingAnchorOracleBase.Parameters[] memory cases, bytes[] memory errors) = _invalidParameters();
+        for (uint256 i; i < cases.length; ++i) {
+            vm.expectRevert(errors[i]);
+            new OssifiableProxy(impl, admin, TrailingAnchorOracleModel.initializeCall(admin, cases[i]));
+        }
+    }
+
+    // ---
+    // ROLES
+    // ---
+
+    /// @dev Two roles under the admin: the manager sets the parameters and suspends pricing, the price acceptor
+    ///      accepts a price.
+    function test_roles_idsAndAdmin() public view {
+        assertEq(oracle.MANAGER_ROLE(), keccak256("MANAGER_ROLE"), "MANAGER_ROLE");
+        assertEq(oracle.PRICE_ACCEPTOR_ROLE(), keccak256("PRICE_ACCEPTOR_ROLE"), "PRICE_ACCEPTOR_ROLE");
+        assertEq(oracle.getRoleAdmin(oracle.MANAGER_ROLE()), oracle.DEFAULT_ADMIN_ROLE(), "manager role admin");
+        assertEq(
+            oracle.getRoleAdmin(oracle.PRICE_ACCEPTOR_ROLE()), oracle.DEFAULT_ADMIN_ROLE(), "price acceptor role admin"
+        );
+    }
+
+    // ---
+    // PRICE
+    // ---
+
+    function test_price_scalesCurrentPrice() public view {
+        assertEq(oracle.PRICE_SCALE(), priceScale, "PRICE_SCALE");
+        assertEq(oracle.price(), INITIAL_PRICE * priceScale, "the current price times PRICE_SCALE");
+    }
+
+    /// @dev The anchor price × (1 − maxPriceBelowAnchor) and × (1 + maxPriceAboveAnchor), rounded down, both edges
+    ///      inclusive.
+    function test_price_boundsEdgesInclusive() public {
+        uint256 low = _lower(INITIAL_PRICE);
+        uint256 high = _upper(INITIAL_PRICE);
+        source.setCurrentPrice(low);
+        assertEq(oracle.price(), low * priceScale, "lower bound");
+        source.setCurrentPrice(high);
+        assertEq(oracle.price(), high * priceScale, "upper bound");
+        source.setCurrentPrice(low - 1);
+        vm.expectRevert(abi.encodeWithSelector(TrailingAnchorOracleBase.PriceOutOfBounds.selector, low - 1, low, high));
+        oracle.price();
+        source.setCurrentPrice(high + 1);
+        vm.expectRevert(abi.encodeWithSelector(TrailingAnchorOracleBase.PriceOutOfBounds.selector, high + 1, low, high));
+        oracle.price();
+    }
+
+    /// @dev The two bounds are separate: the same 0.08% passes below the anchor, inside the 0.1% decrease, and fails
+    ///      above it, outside the 0.05% increase.
+    function test_price_boundsAreSeparate() public {
+        uint256 distance = Math.mulDiv(INITIAL_PRICE, 0.0008e18, WAD);
+        source.setCurrentPrice(INITIAL_PRICE - distance);
+        assertEq(oracle.price(), (INITIAL_PRICE - distance) * priceScale, "0.08% down");
+        source.setCurrentPrice(INITIAL_PRICE + distance);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrailingAnchorOracleBase.PriceOutOfBounds.selector,
+                INITIAL_PRICE + distance,
+                _lower(INITIAL_PRICE),
+                _upper(INITIAL_PRICE)
+            )
+        );
+        oracle.price();
+    }
+
+    function testRevert_price_sourceFails() public {
+        source.setCurrentPrice(0);
+        vm.expectRevert(TrailingAnchorOracleBase.ZeroPrice.selector);
+        oracle.price();
+        source.setDown(true);
+        vm.expectRevert(SourceDown.selector);
+        oracle.price();
+    }
+
+    /// @dev `price()` checks the anchor's bounds only: a pending anchor in its window does not let the price through
+    ///      until an update moves the anchor onto it.
+    function test_price_ignoresPendingAnchor() public {
+        _withoutFloor();
+        uint256 fallen = Math.mulDiv(INITIAL_PRICE, 0.975e18, WAD);
+        source.setCurrentPrice(fallen);
+        _update();
+        assertEq(_read().pendingAnchorPrice, fallen, "the pending anchor is the price itself");
+        vm.warp(START + DELAY);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrailingAnchorOracleBase.PriceOutOfBounds.selector, fallen, _lower(INITIAL_PRICE), _upper(INITIAL_PRICE)
+            )
+        );
+        oracle.price();
+        _update();
+        assertEq(oracle.price(), fallen * priceScale, "priced once the update re-anchors");
+    }
+
+    /// @dev Any current price and suspension: the price is the current price scaled, or the revert the rules name.
+    function testFuzz_price_matchesRule(uint256 currentPrice, uint256 resumesIn, uint256 elapsed) public {
+        currentPrice = bound(currentPrice, 0, INITIAL_PRICE * 2);
+        resumesIn = bound(resumesIn, 0, 7 days);
+        elapsed = bound(elapsed, 0, 8 days);
+        vm.prank(manager);
+        oracle.setPricingResumesAt(uint40(START + resumesIn));
+        vm.warp(START + elapsed);
+        source.setCurrentPrice(currentPrice);
+        _assertPriceMatchesRule();
+    }
+
+    /// @dev The usual path reads the first two slots of the namespace only, also with a pending anchor and a past
+    ///      suspension stored, besides the proxy's implementation slot.
+    function test_price_readsTwoSlots() public {
+        vm.prank(manager);
+        oracle.setPricingResumesAt(uint40(START + 1));
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.9e18, WAD));
+        _update();
+        source.setCurrentPrice(INITIAL_PRICE);
+        vm.warp(START + 1);
+        bytes32 base = TrailingAnchorOracleModel.namespaceSlot(_namespace());
+        vm.record();
+        oracle.price();
+        (bytes32[] memory reads,) = vm.accesses(address(oracle));
+        bool sawFirst;
+        bool sawSecond;
+        for (uint256 i; i < reads.length; ++i) {
+            if (reads[i] == base) sawFirst = true;
+            else if (reads[i] == bytes32(uint256(base) + 1)) sawSecond = true;
+            else assertEq(reads[i], IMPLEMENTATION_SLOT, "a slot other than the first two");
+        }
+        assertTrue(sawFirst && sawSecond, "both slots read");
+    }
+
+    // ---
+    // UPDATE ANCHOR: DRIFT
+    // ---
+
+    /// @dev A current price within the bounds and the reach is taken whole, by anyone: a day at 6% a year reaches
+    ///      0.016% up, and 0.01% is inside it.
+    function test_updateAnchor_takesPriceInsideReach() public {
+        vm.warp(START + 1 days);
+        uint256 currentPrice = INITIAL_PRICE + INITIAL_PRICE / 10_000;
+        source.setCurrentPrice(currentPrice);
+        TrailingAnchorOracleUpdate memory u = _update();
+        assertTrue(u.anchorSet, "moved");
+        assertEq(_read().anchorPrice, currentPrice, "anchorPrice");
+        assertEq(oracle.price(), currentPrice * priceScale, "price is the current price");
+    }
+
+    /// @dev A current price on the upper bound moves the anchor by one day of the rise rate compounded continuously,
+    ///      rounded down.
+    function test_updateAnchor_risesAtRiseRate() public {
+        vm.warp(START + 1 days);
+        source.setCurrentPrice(_upper(INITIAL_PRICE));
+        _update();
+        assertEq(_read().anchorPrice, INITIAL_PRICE + _riseStep(INITIAL_PRICE, 1 days), "one day of the rise rate");
+    }
+
+    /// @dev The rise rate is a continuous rate, so a year of rise is the same for any schedule of updates: one update
+    ///      after a year and an update every day both take the anchor to about e^0.06 = 1.0618365 times the seed, and
+    ///      neither passes it. A rise of 6% a year, added once a day from the last anchor, would compound to 6.18%.
+    ///      The bound is 10% here, so that one update can follow a whole year.
+    function test_updateAnchor_yearOfRiseIndependentOfSchedule() public {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxPriceAboveAnchor = 0.1e18;
+        _setParameters(p);
+        uint256 limit = Math.mulDiv(INITIAL_PRICE, 1.061836546545359622e18, WAD);
+
+        uint256 snapshot = vm.snapshotState();
+        vm.warp(START + YEAR);
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 1.07e18, WAD));
+        _update();
+        uint256 once = _read().anchorPrice;
+        assertEq(once, INITIAL_PRICE + _riseStep(INITIAL_PRICE, YEAR), "one update after a year");
+        assertLe(once, limit, "one update stays under e^0.06");
+        vm.revertToState(snapshot);
+
+        for (uint256 day = 1; day <= 365; ++day) {
+            vm.warp(START + day * 1 days);
+            source.setCurrentPrice(Math.mulDiv(_read().anchorPrice, 1.07e18, WAD));
+            oracle.updateAnchor();
+        }
+        uint256 daily = _read().anchorPrice;
+        assertLe(daily, limit, "daily updates stay under e^0.06");
+        assertApproxEqRel(daily, once, 0.000001e18, "the schedule moves the year's rise by under 0.0001%");
+    }
+
+    /// @dev Any schedule: updates at random intervals of one to sixty days over a year, the source always ahead of the
+    ///      anchor, leave the anchor between one whole-year step, 1 + 0.06 + 0.06²/2 + 0.06³/6 = 1.061836, and
+    ///      e^0.06 = 1.0618365465 times the seed.
+    function testFuzz_updateAnchor_yearOfRiseNeverPassesTheContinuousRate(uint256 seed) public {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxPriceAboveAnchor = 0.1e18;
+        _setParameters(p);
+        uint256 time = START;
+        while (time < START + YEAR) {
+            seed = uint256(keccak256(abi.encode(seed)));
+            time = Math.min(time + bound(seed, 1 days, 60 days), START + YEAR);
+            vm.warp(time);
+            source.setCurrentPrice(Math.mulDiv(_read().anchorPrice, 1.07e18, WAD));
+            oracle.updateAnchor();
+        }
+        uint256 anchor = _read().anchorPrice;
+        assertLe(anchor, Math.mulDiv(INITIAL_PRICE, 1.061836546545359622e18, WAD), "never over e^0.06");
+        assertGe(anchor, Math.mulDiv(INITIAL_PRICE, 1.0618359e18, WAD), "never under one whole-year step");
+    }
+
+    /// @dev The rise rule takes a delay over which the rise rate covers exactly the upper bound. At 8.76% a year one
+    ///      hour is x = 0.00001, and x + x²/2 + x³/6 in WAD, each term rounded down, is 1e13 + 5e7 + 166: that bound
+    ///      is taken, and one wei less is refused.
+    function test_setParameters_riseOverOneDelayEqualToTheBound() public {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxAnchorContinuousRiseRate = 0.0876e18;
+        p.reanchorDelay = 1 hours;
+        p.maxPriceAboveAnchor = 10_000_050_000_166;
+        vm.prank(manager);
+        oracle.setParameters(p);
+        p.maxPriceAboveAnchor = 10_000_050_000_165;
+        vm.prank(manager);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrailingAnchorOracleBase.RiseOverDelayExceedsMaxPriceAboveAnchor.selector,
+                10_000_050_000_166,
+                10_000_050_000_165
+            )
+        );
+        oracle.setParameters(p);
+    }
+
+    /// @dev The fall side of the delay rule: with a 0.1% lower bound and a 48-hour delay a source may fall at a
+    ///      continuous rate of at most −ln(0.999) × 365 days / 48 hours = 18.2591% and stay within the bound
+    ///      over one delay. The edge, found with exact integer arithmetic on c / (1 + c) ≤ 0.001, passes, and one
+    ///      wei more is refused. The rise rate is off, so only the fall rule decides.
+    function test_setParameters_fallRateEdgeOverOneDelay() public {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxAnchorContinuousRiseRate = 0;
+        p.reanchorDelay = 48 hours;
+        p.maxAnchorContinuousFallRate = 182_591_310_886_608_672;
+        vm.prank(manager);
+        oracle.setParameters(p);
+        p.maxAnchorContinuousFallRate = 182_591_310_886_608_673;
+        vm.prank(manager);
+        // Over 48 hours this rate falls 0.001e18 + 1 wei, one wei past the bound.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrailingAnchorOracleBase.FallOverDelayExceedsMaxPriceBelowAnchor.selector,
+                0.001e18 + 1,
+                MAX_PRICE_BELOW_ANCHOR
+            )
+        );
+        oracle.setParameters(p);
+    }
+
+    /// @dev A current price on the lower bound moves the anchor by one day of the fall rate compounded continuously,
+    ///      rounded down.
+    function test_updateAnchor_fallsAtFallRate() public {
+        vm.warp(START + 1 days);
+        source.setCurrentPrice(_lower(INITIAL_PRICE));
+        _update();
+        assertEq(_read().anchorPrice, INITIAL_PRICE - _fallStep(INITIAL_PRICE, 1 days), "one day of the fall rate");
+    }
+
+    /// @dev The fall rate is a continuous rate, so a year of fall is the same for any schedule of updates: one update
+    ///      after a year and an update every day both take the anchor to about e^−0.01 = 0.9900498 times the
+    ///      seed, and neither goes under it. A fall of 1% a year, taken once from the seed, would go to 0.99. The
+    ///      bound is 10% here, so that one update can follow a whole year, and the floor is out of the way.
+    function test_updateAnchor_yearOfFallIndependentOfSchedule() public {
+        _setParameters(_wideFall());
+        uint256 limit = Math.mulDiv(INITIAL_PRICE, 0.990049833749168053e18, WAD);
+
+        uint256 snapshot = vm.snapshotState();
+        vm.warp(START + YEAR);
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.95e18, WAD));
+        _update();
+        uint256 once = _read().anchorPrice;
+        assertEq(once, INITIAL_PRICE - _fallStep(INITIAL_PRICE, YEAR), "one update after a year");
+        assertGe(once, limit, "one update stays over e^-0.01");
+        vm.revertToState(snapshot);
+
+        for (uint256 day = 1; day <= 365; ++day) {
+            vm.warp(START + day * 1 days);
+            source.setCurrentPrice(Math.mulDiv(_read().anchorPrice, 0.95e18, WAD));
+            oracle.updateAnchor();
+        }
+        uint256 daily = _read().anchorPrice;
+        assertGe(daily, limit, "daily updates stay over e^-0.01");
+        assertApproxEqRel(daily, once, 0.000001e18, "the schedule moves the year's fall by under 0.0001%");
+    }
+
+    /// @dev Any schedule: updates at random intervals of one to sixty days over a year, the source always under the
+    ///      anchor, leave the anchor between e^−0.01 = 0.9900498337 and one whole-year step,
+    ///      1 / (1 + 0.01 + 0.01²/2 + 0.01³/6) = 0.9900498342, times the seed.
+    function testFuzz_updateAnchor_yearOfFallNeverPassesTheContinuousRate(uint256 seed) public {
+        _setParameters(_wideFall());
+        uint256 time = START;
+        while (time < START + YEAR) {
+            seed = uint256(keccak256(abi.encode(seed)));
+            time = Math.min(time + bound(seed, 1 days, 60 days), START + YEAR);
+            vm.warp(time);
+            source.setCurrentPrice(Math.mulDiv(_read().anchorPrice, 0.95e18, WAD));
+            oracle.updateAnchor();
+        }
+        uint256 anchor = _read().anchorPrice;
+        assertGe(anchor, Math.mulDiv(INITIAL_PRICE, 0.990049833749168053e18, WAD), "never under e^-0.01");
+        assertLe(anchor, Math.mulDiv(INITIAL_PRICE, 0.9900498342e18, WAD), "never over one whole-year step");
+    }
+
+    /// @dev After two years at rest the rise rate would reach 12.7%, but a drift only follows a price within the
+    ///      bounds, so the anchor lands on the price: one move never passes the bound.
+    function test_updateAnchor_longRestMovesOnlyToThePrice() public {
+        vm.warp(START + 2 * YEAR);
+        uint256 high = _upper(INITIAL_PRICE);
+        source.setCurrentPrice(high);
+        _update();
+        assertEq(_read().anchorPrice, high, "the upper bound, not the reach");
+    }
+
+    /// @dev The highest fall rate over three years at rest reaches 92% of the anchor: the anchor lands on the price.
+    function test_updateAnchor_highestFallRateAfterLongRest() public {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxAnchorContinuousFallRate = uint64(WAD);
+        _setParameters(p);
+        vm.warp(START + 3 * YEAR);
+        uint256 low = _lower(INITIAL_PRICE);
+        source.setCurrentPrice(low);
+        _update();
+        assertEq(_read().anchorPrice, low, "the lower bound");
+    }
+
+    /// @dev A second update in the block the anchor moved counts no time, even on a source that moved again within the
+    ///      bounds, so updates in one transaction cannot compound.
+    function test_updateAnchor_sameBlockDoesNotCompound() public {
+        vm.warp(START + 1 days);
+        source.setCurrentPrice(_upper(INITIAL_PRICE));
+        _update();
+        uint256 moved = _read().anchorPrice;
+        source.setCurrentPrice(_upper(moved));
+        TrailingAnchorOracleUpdate memory u = _update();
+        assertFalse(u.anchorSet || u.pendingAnchorSet || u.pendingAnchorCleared, "nothing changes");
+        assertEq(_read().anchorPrice, moved, "no second move");
+    }
+
+    /// @dev A price on the anchor with no pending anchor changes nothing and does not revert.
+    function test_updateAnchor_nothingToDo() public {
+        vm.warp(START + 1 days);
+        TrailingAnchorOracleUpdate memory u = _update();
+        assertFalse(u.anchorSet || u.pendingAnchorSet || u.pendingAnchorCleared, "nothing changes");
+        assertEq(_read().anchorAt, START, "anchorAt kept");
+    }
+
+    /// @dev Each case returns its own outcome, which `AnchorUpdated` carries too: a price within the bounds, a record,
+    ///      a held wait, a re-anchor, a re-anchor onto the floor, an anchor pinned on the floor, a re-anchor onto the
+    ///      ceiling, and an anchor pinned on the ceiling.
+    function test_updateAnchor_returnsTheOutcomeOfEachCase() public {
+        vm.warp(START + 1 days);
+        _assertOutcome(TrailingAnchorOracleBase.UpdateOutcome.WithinBounds);
+
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.995e18, WAD));
+        _assertOutcome(TrailingAnchorOracleBase.UpdateOutcome.PendingAnchorRecorded);
+        _assertOutcome(TrailingAnchorOracleBase.UpdateOutcome.PendingAnchorHeld);
+        vm.warp(block.timestamp + DELAY);
+        _assertOutcome(TrailingAnchorOracleBase.UpdateOutcome.PendingAnchorApplied);
+
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.95e18, WAD));
+        _assertOutcome(TrailingAnchorOracleBase.UpdateOutcome.PendingAnchorRecorded);
+        vm.warp(block.timestamp + DELAY);
+        _assertOutcome(TrailingAnchorOracleBase.UpdateOutcome.PendingAnchorApplied);
+        assertEq(_read().anchorPrice, _floor(INITIAL_PRICE), "onto the floor");
+        vm.warp(block.timestamp + DELAY);
+        _assertOutcome(TrailingAnchorOracleBase.UpdateOutcome.AnchorOnFloor);
+
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 1.05e18, WAD));
+        _assertOutcome(TrailingAnchorOracleBase.UpdateOutcome.PendingAnchorRecorded);
+        vm.warp(block.timestamp + DELAY);
+        _assertOutcome(TrailingAnchorOracleBase.UpdateOutcome.PendingAnchorApplied);
+        assertEq(_read().anchorPrice, _ceiling(INITIAL_PRICE), "onto the ceiling");
+        vm.warp(block.timestamp + DELAY);
+        _assertOutcome(TrailingAnchorOracleBase.UpdateOutcome.AnchorOnCeiling);
+    }
+
+    /// @dev A price outside the bounds does not drift the anchor, however long it rested: it becomes a pending anchor.
+    function test_updateAnchor_noDriftOutsideBounds() public {
+        vm.warp(START + 9 days);
+        uint256 currentPrice = _upper(INITIAL_PRICE) + 1;
+        source.setCurrentPrice(currentPrice);
+        TrailingAnchorOracleUpdate memory u = _update();
+        assertFalse(u.anchorSet, "no drift");
+        assertEq(_read().anchorPrice, INITIAL_PRICE, "anchor kept");
+        assertEq(_read().pendingAnchorPrice, currentPrice, "the price is the pending anchor");
+    }
+
+    /// @dev A down source bubbles up, and a zero price reverts before any move.
+    function testRevert_updateAnchor_sourceFails() public {
+        vm.warp(START + 1 days);
+        source.setDown(true);
+        vm.expectRevert(SourceDown.selector);
+        oracle.updateAnchor();
+        source.setDown(false);
+        source.setCurrentPrice(0);
+        vm.expectRevert(TrailingAnchorOracleBase.ZeroPrice.selector);
+        oracle.updateAnchor();
+    }
+
+    // ---
+    // UPDATE ANCHOR: PENDING ANCHOR
+    // ---
+
+    /// @dev A price outside the bounds, at any distance, is the pending anchor itself, recorded at the update's time.
+    function test_updateAnchor_recordsThePriceAsPendingAnchor() public {
+        vm.warp(START + 1 hours);
+        uint256 currentPrice = Math.mulDiv(INITIAL_PRICE, 0.5e18, WAD);
+        source.setCurrentPrice(currentPrice);
+        TrailingAnchorOracleUpdate memory u = _update();
+        assertTrue(u.pendingAnchorSet, "PendingAnchorSet");
+        assertEq(_read().pendingAnchorPrice, currentPrice, "pendingAnchorPrice");
+        assertEq(_read().pendingAnchorAt, START + 1 hours, "pendingAnchorAt");
+        assertEq(_read().anchorPrice, INITIAL_PRICE, "anchor kept");
+    }
+
+    /// @dev While the price stays outside the bounds on the pending anchor's side, updates before the window change
+    ///      nothing, even after a further fall and on the last second of the delay.
+    function test_updateAnchor_holdsWhilePendingAnchorWaits() public {
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.9e18, WAD));
+        _update();
+        TrailingAnchorOracleState memory recorded = _read();
+        vm.warp(START + DELAY - 1);
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.8e18, WAD));
+        TrailingAnchorOracleUpdate memory u = _update();
+        assertFalse(u.anchorSet || u.pendingAnchorSet || u.pendingAnchorCleared, "nothing changes");
+        _assertState(recorded);
+    }
+
+    /// @dev The window opens exactly `reanchorDelay` after the record: the anchor moves onto the pending anchor.
+    function test_updateAnchor_reanchorsWhenTheWindowOpens() public {
+        uint256 currentPrice = Math.mulDiv(INITIAL_PRICE, 0.995e18, WAD);
+        source.setCurrentPrice(currentPrice);
+        _update();
+        vm.warp(START + DELAY);
+        vm.expectEmit(address(oracle));
+        emit TrailingAnchorOracleBase.AnchorSet(currentPrice, uint40(START + DELAY), false);
+        vm.expectEmit(address(oracle));
+        emit TrailingAnchorOracleBase.PendingAnchorCleared();
+        vm.expectEmit(address(oracle));
+        emit TrailingAnchorOracleBase.AnchorUpdated(
+            TrailingAnchorOracleBase.UpdateOutcome.PendingAnchorApplied, currentPrice
+        );
+        oracle.updateAnchor();
+        assertEq(_read().anchorPrice, currentPrice, "anchor on the pending anchor");
+        assertEq(_read().pendingAnchorAt, 0, "the price is within the new bounds");
+    }
+
+    /// @dev The window's last second still re-anchors.
+    function test_updateAnchor_reanchorsOnTheWindowsLastSecond() public {
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.995e18, WAD));
+        _update();
+        uint256 pendingAnchorPrice = _read().pendingAnchorPrice;
+        vm.warp(START + DELAY + WINDOW);
+        _update();
+        assertEq(_read().anchorPrice, pendingAnchorPrice, "re-anchored");
+    }
+
+    /// @dev One second after the window the pending anchor has expired: the update records it anew from the current
+    ///      price, and the delay starts again.
+    function test_updateAnchor_expiredPendingAnchorRecordedAnew() public {
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.9e18, WAD));
+        _update();
+        vm.warp(START + DELAY + WINDOW + 1);
+        TrailingAnchorOracleUpdate memory u = _update();
+        assertFalse(u.anchorSet, "an expired pending anchor is not used");
+        assertTrue(u.pendingAnchorSet, "recorded anew");
+        assertEq(_read().pendingAnchorAt, START + DELAY + WINDOW + 1, "the delay restarts");
+        assertEq(_read().anchorPrice, INITIAL_PRICE, "anchor kept");
+    }
+
+    /// @dev The price falls further while the pending anchor waits: the window moves the anchor onto the published
+    ///      pending anchor, not the further price, and records the further price as the next pending anchor in the same
+    ///      call.
+    function test_updateAnchor_reanchorRecordsAFurtherMove() public {
+        _withoutFloor();
+        uint256 first = Math.mulDiv(INITIAL_PRICE, 0.9e18, WAD);
+        source.setCurrentPrice(first);
+        _update();
+        vm.warp(START + 1 hours);
+        uint256 further = Math.mulDiv(INITIAL_PRICE, 0.8e18, WAD);
+        source.setCurrentPrice(further);
+        _update();
+        vm.warp(START + DELAY);
+        vm.expectEmit(address(oracle));
+        emit TrailingAnchorOracleBase.AnchorSet(first, uint40(START + DELAY), false);
+        vm.expectEmit(address(oracle));
+        emit TrailingAnchorOracleBase.PendingAnchorSet(further, uint40(START + DELAY));
+        vm.expectEmit(address(oracle));
+        emit TrailingAnchorOracleBase.AnchorUpdated(
+            TrailingAnchorOracleBase.UpdateOutcome.PendingAnchorApplied, further
+        );
+        oracle.updateAnchor();
+    }
+
+    /// @dev A 10% fall is priced one delay after the update that records it, with no floor in the way.
+    function test_updateAnchor_largeFallPricedAfterOneDelay() public {
+        _withoutFloor();
+        uint256 fallen = Math.mulDiv(INITIAL_PRICE, 0.9e18, WAD);
+        source.setCurrentPrice(fallen);
+        assertEq(_walk(), 1, "one re-anchor");
+        assertEq(block.timestamp, START + DELAY, "one delay");
+        assertEq(oracle.price(), fallen * priceScale, "priced at the fall");
+    }
+
+    /// @dev A 5% rise is priced one delay after the update that records it, with no ceiling in the way.
+    function test_updateAnchor_largeRisePricedAfterOneDelay() public {
+        _withoutCeiling();
+        uint256 risen = Math.mulDiv(INITIAL_PRICE, 1.05e18, WAD);
+        source.setCurrentPrice(risen);
+        assertEq(_walk(), 1, "one re-anchor");
+        assertEq(oracle.price(), risen * priceScale, "priced at the rise");
+    }
+
+    /// @dev A price that falls back short of a downward pending anchor, still outside the bounds, holds it: when the
+    ///      window opens the anchor moves onto the price, the nearer of the two, and the pending anchor is dropped.
+    function test_updateAnchor_fallShortHoldsAndReanchorsOnThePrice() public {
+        _withoutFloor();
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.9e18, WAD));
+        _update();
+        TrailingAnchorOracleState memory recorded = _read();
+        vm.warp(START + 1 hours);
+        uint256 recovered = Math.mulDiv(INITIAL_PRICE, 0.98e18, WAD);
+        source.setCurrentPrice(recovered);
+        TrailingAnchorOracleUpdate memory u = _update();
+        assertFalse(u.anchorSet || u.pendingAnchorSet || u.pendingAnchorCleared, "held");
+        _assertState(recorded);
+        vm.warp(START + DELAY);
+        u = _update();
+        assertEq(_read().anchorPrice, recovered, "the anchor on the price, not the pending anchor");
+        assertTrue(u.pendingAnchorCleared, "the price is within the new bounds");
+    }
+
+    /// @dev The same upward: a price that eases back short of an upward pending anchor holds it, and the window moves
+    ///      the anchor onto the price.
+    function test_updateAnchor_riseShortHoldsAndReanchorsOnThePrice() public {
+        _withoutCeiling();
+        uint256 risen = Math.mulDiv(INITIAL_PRICE, 1.05e18, WAD);
+        source.setCurrentPrice(risen);
+        _update();
+        vm.warp(START + 1 hours);
+        uint256 eased = Math.mulDiv(INITIAL_PRICE, 1.01e18, WAD);
+        source.setCurrentPrice(eased);
+        _update();
+        assertEq(_read().pendingAnchorPrice, risen, "the pending anchor holds");
+        vm.warp(START + DELAY);
+        _update();
+        assertEq(_read().anchorPrice, eased, "the anchor on the price");
+    }
+
+    /// @dev A real 1% fall on a source that keeps accruing daily, with a keeper an hour after each step: the step moves
+    ///      the price back toward the anchor but leaves it outside the bounds, so the pending anchor holds, and the
+    ///      first update after the window opens moves the anchor onto the accrued price.
+    function test_updateAnchor_dailyAccrualAfterAFallReanchors() public {
+        uint256 fallen = Math.mulDiv(INITIAL_PRICE, 0.99e18, WAD);
+        source.setCurrentPrice(fallen);
+        _update();
+        vm.warp(START + 1 days);
+        uint256 accrued = Math.mulDiv(fallen, 1.000115e18, WAD);
+        source.setCurrentPrice(accrued);
+        vm.warp(START + 1 days + 1 hours);
+        TrailingAnchorOracleUpdate memory u = _update();
+        assertTrue(u.anchorSet, "re-anchored at the first update after the window opened");
+        assertEq(_read().anchorPrice, accrued, "onto the accrued price");
+        assertEq(oracle.price(), accrued * priceScale, "priced");
+    }
+
+    /// @dev A one-block spike recorded as a pending anchor is dropped by the next update once the price is back within
+    ///      the bounds, so the anchor never lands on it.
+    function test_updateAnchor_backInBoundsDropsPendingAnchor() public {
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 1.001e18, WAD));
+        _update();
+        assertGt(_read().pendingAnchorAt, 0, "a pending anchor");
+        source.setCurrentPrice(INITIAL_PRICE);
+        TrailingAnchorOracleUpdate memory u = _update();
+        assertTrue(u.pendingAnchorCleared, "PendingAnchorCleared");
+        vm.warp(START + DELAY);
+        _update();
+        assertEq(_read().anchorPrice, INITIAL_PRICE, "the anchor never moved");
+    }
+
+    /// @dev A price that crosses to the other side of the anchor replaces a downward pending anchor with an upward one.
+    function test_updateAnchor_otherSideReplacesPendingAnchor() public {
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.9e18, WAD));
+        _update();
+        vm.warp(START + 1 hours);
+        uint256 risen = Math.mulDiv(INITIAL_PRICE, 1.05e18, WAD);
+        source.setCurrentPrice(risen);
+        _update();
+        assertEq(_read().pendingAnchorPrice, risen, "the rise is the pending anchor");
+    }
+
+    /// @dev A delay and a window near the type's maximum, which a manager might set to stop re-anchoring with both
+    ///      rates off, as the delay rules then allow, do not overflow the window arithmetic.
+    function test_updateAnchor_hugeDelayDoesNotOverflow() public {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxAnchorContinuousRiseRate = 0;
+        p.maxAnchorContinuousFallRate = 0;
+        p.reanchorDelay = type(uint40).max;
+        p.reanchorWindow = type(uint40).max;
+        _setParameters(p);
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.9e18, WAD));
+        _update();
+        vm.warp(START + 30 days);
+        TrailingAnchorOracleUpdate memory u = _update();
+        assertFalse(u.anchorSet || u.pendingAnchorSet || u.pendingAnchorCleared, "still waiting");
+    }
+
+    /// @dev Any current price and time, with or without a pending anchor: the update does what the model says, events
+    ///      included.
+    function testFuzz_updateAnchor_matchesModel(uint256 factor, uint256 elapsed, bool withPendingAnchor) public {
+        if (withPendingAnchor) {
+            source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.95e18, WAD));
+            _update();
+        }
+        factor = bound(factor, 0.8e18, 1.2e18);
+        elapsed = bound(elapsed, 0, 3 days);
+        vm.warp(START + elapsed);
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, factor, WAD));
+        _update();
+        _assertPriceMatchesRule();
+    }
+
+    /// @dev Any walk of prices and times: every anchor move is a drift toward a price within the bounds, inside the
+    ///      rates' reach, or a move onto the nearer of the price and a pending anchor recorded at least the delay
+    ///      before, with the price outside the bounds on the pending anchor's side. No move goes under the floor, no
+    ///      re-anchor over the ceiling, a re-anchor leaves the base price, and a drift never widens the anchor's
+    ///      gap over it nor raises it by more than its own step.
+    function testFuzz_updateAnchor_movesOnlyByReachOrWaitedPendingAnchors(uint256 seed) public {
+        for (uint256 i; i < 40; ++i) {
+            vm.warp(block.timestamp + bound(uint256(keccak256(abi.encode(seed, i, "time"))), 0, 2 days));
+            TrailingAnchorOracleState memory s = _read();
+            uint256 pick = uint256(keccak256(abi.encode(seed, i, "price")));
+            uint256 factor = pick % 3 == 0 ? bound(pick, 0.9996e18, 1.0004e18) : bound(pick, 0.85e18, 1.15e18);
+            uint256 currentPrice = Math.mulDiv(s.anchorPrice, factor, WAD);
+            source.setCurrentPrice(currentPrice);
+            TrailingAnchorOracleUpdate memory u = _update();
+            if (u.anchorSet) _assertMoveFollowsTheRules(s, u.next, currentPrice);
+        }
+    }
+
+    /// @dev The checks of the walk above on one move from `s` to `next`.
+    function _assertMoveFollowsTheRules(
+        TrailingAnchorOracleState memory s,
+        TrailingAnchorOracleState memory next,
+        uint256 currentPrice
+    ) internal view {
+        uint256 moved = next.anchorPrice;
+        uint256 low = Math.min(_floor(s.basePrice), s.anchorPrice);
+        uint256 high = Math.max(_ceiling(s.basePrice), s.anchorPrice);
+        assertGe(moved, low, "a move under the floor");
+        assertGe(next.basePrice, s.basePrice, "the base price fell");
+        bool waited = s.pendingAnchorAt != 0 && block.timestamp >= s.pendingAnchorAt + s.reanchorDelay;
+        bool up = s.pendingAnchorPrice > s.anchorPrice;
+        bool heldSide = !s.withinBounds(currentPrice) && (currentPrice > s.anchorPrice) == up;
+        uint256 nearer = up
+            ? Math.min(Math.min(s.pendingAnchorPrice, currentPrice), high)
+            : Math.max(Math.max(s.pendingAnchorPrice, currentPrice), low);
+        if (waited && heldSide && moved == nearer) {
+            assertEq(next.basePrice, s.basePrice, "a re-anchor moved the base price");
+            return;
+        }
+        assertTrue(s.withinBounds(currentPrice), "a drift toward a price outside the bounds");
+        (uint256 lowest, uint256 highest) = s.reach(block.timestamp);
+        assertGe(moved, lowest, "a drift under the reach");
+        assertLe(moved, highest, "a drift over the reach");
+        uint256 gapBefore = s.anchorPrice > s.basePrice ? s.anchorPrice - s.basePrice : 0;
+        uint256 gapAfter = moved > next.basePrice ? moved - next.basePrice : 0;
+        assertLe(gapAfter, gapBefore, "a drift widened the gap over the base price");
+        uint256 step = moved > s.anchorPrice ? moved - s.anchorPrice : 0;
+        assertLe(next.basePrice - s.basePrice, step, "the base price rose past the drift's step");
+    }
+
+    // ---
+    // UPDATE ANCHOR: FLOOR
+    // ---
+
+    /// @dev A 5% fall waits out the delay and then moves the anchor only onto the floor, 1% under the base price.
+    ///      The price, still outside the floor's bounds, keeps reverting and is recorded as the next pending anchor.
+    function test_updateAnchor_reanchorDownStopsAtTheFloor() public {
+        uint256 fallen = Math.mulDiv(INITIAL_PRICE, 0.95e18, WAD);
+        source.setCurrentPrice(fallen);
+        _update();
+        vm.warp(START + DELAY);
+        TrailingAnchorOracleUpdate memory u = _update();
+        uint256 floorPrice = _floor(INITIAL_PRICE);
+        assertTrue(u.anchorSet && u.pendingAnchorSet, "onto the floor, and the price recorded again");
+        assertEq(_read().anchorPrice, floorPrice, "the anchor on the floor");
+        assertEq(_read().pendingAnchorPrice, fallen, "the price is the next pending anchor");
+        assertEq(_read().basePrice, INITIAL_PRICE, "the base price stays");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrailingAnchorOracleBase.PriceOutOfBounds.selector, fallen, _lower(floorPrice), _upper(floorPrice)
+            )
+        );
+        oracle.price();
+    }
+
+    /// @dev On the floor with the price still under its bounds, an update in the next window changes nothing. Once that
+    ///      pending anchor expires, the next update records the price again, and the anchor stays on the floor.
+    function test_updateAnchor_pinnedOnTheFloorChangesNothing() public {
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.95e18, WAD));
+        _update();
+        vm.warp(START + DELAY);
+        _update();
+        TrailingAnchorOracleState memory pinned = _read();
+        vm.warp(START + 2 * DELAY);
+        TrailingAnchorOracleUpdate memory u = _update();
+        assertFalse(u.anchorSet || u.pendingAnchorSet || u.pendingAnchorCleared, "nothing changes");
+        _assertState(pinned);
+        vm.warp(START + 2 * DELAY + WINDOW + 1);
+        u = _update();
+        assertFalse(u.anchorSet, "the anchor stays");
+        assertTrue(u.pendingAnchorSet, "the price recorded again");
+        assertEq(_read().anchorPrice, _floor(INITIAL_PRICE), "on the floor");
+    }
+
+    /// @dev A source that leaves the lower bound by 0.1% of the anchor in every window walks the anchor down one step a
+    ///      window and stops it on the floor, however many windows follow.
+    function test_updateAnchor_walkStopsAtTheFloor() public {
+        uint256 floorPrice = _floor(INITIAL_PRICE);
+        for (uint256 i; i < 20; ++i) {
+            uint256 anchorBefore = _read().anchorPrice;
+            source.setCurrentPrice(Math.mulDiv(anchorBefore, 0.998e18, WAD));
+            _update();
+            vm.warp(block.timestamp + DELAY);
+            _update();
+            assertLe(_read().anchorPrice, anchorBefore, "never up");
+            assertGe(_read().anchorPrice, floorPrice, "never under the floor");
+        }
+        assertEq(_read().anchorPrice, floorPrice, "on the floor");
+        uint256 deeper = Math.mulDiv(floorPrice, 0.998e18, WAD);
+        source.setCurrentPrice(deeper);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrailingAnchorOracleBase.PriceOutOfBounds.selector, deeper, _lower(floorPrice), _upper(floorPrice)
+            )
+        );
+        oracle.price();
+    }
+
+    /// @dev A drift stops on the floor too: at the highest fall rate, a price held on the lower bound
+    ///      walks the anchor down every day until the floor, and no further.
+    function test_updateAnchor_driftStopsAtTheFloor() public {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxAnchorContinuousFallRate = uint64(WAD);
+        _setParameters(p);
+        uint256 floorPrice = _floor(INITIAL_PRICE);
+        for (uint256 day = 1; day <= 30; ++day) {
+            vm.warp(START + day * 1 days);
+            source.setCurrentPrice(_lower(_read().anchorPrice));
+            _update();
+            assertGe(_read().anchorPrice, floorPrice, "never under the floor");
+        }
+        assertEq(_read().anchorPrice, floorPrice, "on the floor");
+    }
+
+    /// @dev The base price follows a drift up onto the anchor, stays through a re-anchor up, rises with the next
+    ///      drift by its step only, so the anchor keeps its gap over it, and stays when the anchor falls.
+    function test_updateAnchor_basePriceFollowsDriftsOnly() public {
+        vm.warp(START + 1 days);
+        source.setCurrentPrice(_upper(INITIAL_PRICE));
+        _update();
+        uint256 drifted = _read().anchorPrice;
+        assertGt(drifted, INITIAL_PRICE, "drifted up");
+        assertEq(_read().basePrice, drifted, "follows a drift");
+
+        source.setCurrentPrice(Math.mulDiv(drifted, 1.05e18, WAD));
+        _update();
+        vm.warp(block.timestamp + DELAY);
+        _update();
+        uint256 capped = _ceiling(drifted);
+        assertEq(_read().anchorPrice, capped, "re-anchored up onto the ceiling");
+        assertEq(_read().basePrice, drifted, "stays through a re-anchor");
+
+        vm.warp(block.timestamp + 1 days);
+        source.setCurrentPrice(_upper(capped));
+        _update();
+        uint256 step = _riseStep(capped, 1 days);
+        assertEq(_read().anchorPrice, capped + step, "drifted up from the ceiling");
+        assertEq(_read().basePrice, drifted + step, "rises by the drift's step");
+
+        uint256 top = capped + step;
+        uint256 fallen = Math.mulDiv(top, 0.995e18, WAD);
+        source.setCurrentPrice(fallen);
+        _update();
+        vm.warp(block.timestamp + DELAY);
+        _update();
+        assertEq(_read().anchorPrice, fallen, "re-anchored down");
+        vm.warp(block.timestamp + 1 days);
+        source.setCurrentPrice(_lower(fallen));
+        _update();
+        assertLt(_read().anchorPrice, fallen, "drifted down");
+        assertEq(_read().basePrice, drifted + step, "stays through both falls");
+    }
+
+    /// @dev A zero `maxAnchorBelowBase` stops every open fall: neither a drift nor a re-anchor lowers the anchor,
+    ///      while a drift still raises it.
+    function test_updateAnchor_zeroBelowBaseStopsEveryOpenFall() public {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxAnchorBelowBase = 0;
+        _setParameters(p);
+        vm.warp(START + 1 days);
+        source.setCurrentPrice(_lower(INITIAL_PRICE));
+        assertFalse(_update().anchorSet, "no drift down");
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.99e18, WAD));
+        _update();
+        vm.warp(block.timestamp + DELAY);
+        assertFalse(_update().anchorSet, "no re-anchor down");
+        source.setCurrentPrice(_upper(INITIAL_PRICE));
+        assertTrue(_update().anchorSet, "a drift up");
+    }
+
+    // ---
+    // UPDATE ANCHOR: CEILING
+    // ---
+
+    /// @dev A 5% rise waits out the delay and then moves the anchor only onto the ceiling, 0.2% over the base
+    ///      price. The price, still outside the ceiling's bounds, keeps reverting and is recorded as the next pending
+    ///      anchor, and the base price stays.
+    function test_updateAnchor_reanchorUpStopsAtTheCeiling() public {
+        uint256 risen = Math.mulDiv(INITIAL_PRICE, 1.05e18, WAD);
+        source.setCurrentPrice(risen);
+        _update();
+        vm.warp(START + DELAY);
+        TrailingAnchorOracleUpdate memory u = _update();
+        uint256 ceilingPrice = _ceiling(INITIAL_PRICE);
+        assertTrue(u.anchorSet && u.pendingAnchorSet, "onto the ceiling, and the price recorded again");
+        assertEq(_read().anchorPrice, ceilingPrice, "the anchor on the ceiling");
+        assertEq(_read().pendingAnchorPrice, risen, "the price is the next pending anchor");
+        assertEq(_read().basePrice, INITIAL_PRICE, "the base price stays");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrailingAnchorOracleBase.PriceOutOfBounds.selector, risen, _lower(ceilingPrice), _upper(ceilingPrice)
+            )
+        );
+        oracle.price();
+    }
+
+    /// @dev On the ceiling with the price still over its bounds, an update in the next window changes nothing. Once
+    ///      that pending anchor expires, the next update records the price again, and the anchor stays on the ceiling.
+    function test_updateAnchor_pinnedOnTheCeilingChangesNothing() public {
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 1.05e18, WAD));
+        _update();
+        vm.warp(START + DELAY);
+        _update();
+        TrailingAnchorOracleState memory pinned = _read();
+        vm.warp(START + 2 * DELAY);
+        TrailingAnchorOracleUpdate memory u = _update();
+        assertFalse(u.anchorSet || u.pendingAnchorSet || u.pendingAnchorCleared, "nothing changes");
+        assertEq(uint8(u.outcome), uint8(TrailingAnchorOracleBase.UpdateOutcome.AnchorOnCeiling), "AnchorOnCeiling");
+        _assertState(pinned);
+        vm.warp(START + 2 * DELAY + WINDOW + 1);
+        u = _update();
+        assertFalse(u.anchorSet, "the anchor stays");
+        assertTrue(u.pendingAnchorSet, "the price recorded again");
+        assertEq(_read().anchorPrice, _ceiling(INITIAL_PRICE), "on the ceiling");
+    }
+
+    /// @dev A source that leaves the upper bound by 0.03% of the anchor in every window walks the anchor up one step a
+    ///      window and stops it on the ceiling, however many windows follow.
+    function test_updateAnchor_walkStopsAtTheCeiling() public {
+        uint256 ceilingPrice = _ceiling(INITIAL_PRICE);
+        for (uint256 i; i < 20; ++i) {
+            uint256 anchorBefore = _read().anchorPrice;
+            source.setCurrentPrice(Math.mulDiv(anchorBefore, 1.0008e18, WAD));
+            _update();
+            vm.warp(block.timestamp + DELAY);
+            _update();
+            assertGe(_read().anchorPrice, anchorBefore, "never down");
+            assertLe(_read().anchorPrice, ceilingPrice, "never over the ceiling");
+            assertEq(_read().basePrice, INITIAL_PRICE, "the base price stays");
+        }
+        assertEq(_read().anchorPrice, ceilingPrice, "on the ceiling");
+        uint256 higher = Math.mulDiv(ceilingPrice, 1.0008e18, WAD);
+        source.setCurrentPrice(higher);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrailingAnchorOracleBase.PriceOutOfBounds.selector, higher, _lower(ceilingPrice), _upper(ceilingPrice)
+            )
+        );
+        oracle.price();
+    }
+
+    /// @dev A zero `maxAnchorAboveBase` keeps every re-anchor up at the base price: from the floor, a rise
+    ///      re-anchors back onto it and no higher, while a drift still raises the anchor and the base price with
+    ///      it.
+    function test_updateAnchor_zeroAboveBaseStopsReanchorsOverTheBasePrice() public {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxAnchorAboveBase = 0;
+        _setParameters(p);
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.95e18, WAD));
+        _update();
+        vm.warp(START + DELAY);
+        _update();
+        assertEq(_read().anchorPrice, _floor(INITIAL_PRICE), "on the floor");
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 1.05e18, WAD));
+        _update();
+        vm.warp(block.timestamp + DELAY);
+        _update();
+        assertEq(_read().anchorPrice, INITIAL_PRICE, "back onto the base price, no higher");
+        vm.warp(block.timestamp + DELAY);
+        assertFalse(_update().anchorSet, "no re-anchor over it");
+        vm.warp(block.timestamp + 1 days);
+        source.setCurrentPrice(_upper(INITIAL_PRICE));
+        assertTrue(_update().anchorSet, "a drift up");
+        assertEq(_read().basePrice, _read().anchorPrice, "the base price follows the drift");
+    }
+
+    // ---
+    // ACCEPT PRICE
+    // ---
+
+    /// @dev Only the price acceptor: neither the admin nor the manager.
+    function testRevert_acceptPrice_notPriceAcceptor() public {
+        bytes32 role = oracle.PRICE_ACCEPTOR_ROLE();
+        address[3] memory callers = [anyone, admin, manager];
+        for (uint256 i; i < callers.length; ++i) {
+            vm.expectRevert(
+                abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, callers[i], role)
+            );
+            vm.prank(callers[i]);
+            oracle.acceptPrice(0, type(uint256).max);
+        }
+    }
+
+    /// @dev The price acceptor takes a price at any distance and drops the pending anchor; `price()` returns it at
+    ///      once.
+    function test_acceptPrice_anyDistanceDropsPendingAnchor() public {
+        uint256 currentPrice = INITIAL_PRICE / 2;
+        source.setCurrentPrice(currentPrice);
+        _update();
+        vm.warp(START + 2 days);
+        TrailingAnchorOracleState memory expected = _read().accepted(currentPrice, START + 2 days);
+        vm.expectEmit(address(oracle));
+        emit TrailingAnchorOracleBase.AnchorSet(currentPrice, uint40(START + 2 days), true);
+        vm.expectEmit(address(oracle));
+        emit TrailingAnchorOracleBase.PendingAnchorCleared();
+        vm.prank(priceAcceptor);
+        oracle.acceptPrice(currentPrice, currentPrice);
+        _assertState(expected);
+        assertEq(oracle.price(), currentPrice * priceScale, "price follows at once");
+    }
+
+    /// @dev Only an acceptance goes under the floor. It moves the anchor onto the price and restarts the base
+    ///      price there, downward too, so the next floor hangs off the accepted price.
+    function test_acceptPrice_underTheFloorRestartsTheBasePrice() public {
+        uint256 fallen = Math.mulDiv(INITIAL_PRICE, 0.95e18, WAD);
+        source.setCurrentPrice(fallen);
+        _update();
+        vm.warp(START + DELAY);
+        _update();
+        assertEq(_read().anchorPrice, _floor(INITIAL_PRICE), "held on the floor");
+        vm.prank(priceAcceptor);
+        oracle.acceptPrice(fallen, fallen);
+        assertEq(_read().anchorPrice, fallen, "accepted under the floor");
+        assertEq(_read().basePrice, fallen, "the base price restarts at the accepted price");
+        assertEq(oracle.price(), fallen * priceScale, "priced");
+
+        source.setCurrentPrice(Math.mulDiv(fallen, 0.95e18, WAD));
+        _update();
+        vm.warp(block.timestamp + DELAY);
+        _update();
+        assertEq(_read().anchorPrice, _floor(fallen), "the next floor, under the accepted price");
+    }
+
+    /// @dev Only an acceptance goes over the ceiling. It moves the anchor onto the price and restarts the base
+    ///      price there, so the next ceiling hangs off the accepted price.
+    function test_acceptPrice_overTheCeilingRestartsTheBasePrice() public {
+        uint256 risen = Math.mulDiv(INITIAL_PRICE, 1.05e18, WAD);
+        source.setCurrentPrice(risen);
+        _update();
+        vm.warp(START + DELAY);
+        _update();
+        assertEq(_read().anchorPrice, _ceiling(INITIAL_PRICE), "held on the ceiling");
+        vm.prank(priceAcceptor);
+        oracle.acceptPrice(risen, risen);
+        assertEq(_read().anchorPrice, risen, "accepted over the ceiling");
+        assertEq(_read().basePrice, risen, "the base price restarts at the accepted price");
+        assertEq(oracle.price(), risen * priceScale, "priced");
+
+        source.setCurrentPrice(Math.mulDiv(risen, 1.05e18, WAD));
+        _update();
+        vm.warp(block.timestamp + DELAY);
+        _update();
+        assertEq(_read().anchorPrice, _ceiling(risen), "the next ceiling, over the accepted price");
+    }
+
+    /// @dev Both edges of the range are taken; a price one wei outside it is refused with the range.
+    function test_acceptPrice_rangeEdgesInclusive() public {
+        uint256 currentPrice = INITIAL_PRICE / 2;
+        source.setCurrentPrice(currentPrice);
+        vm.prank(priceAcceptor);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrailingAnchorOracleBase.UnexpectedPrice.selector, currentPrice, currentPrice + 1, currentPrice + 2
+            )
+        );
+        oracle.acceptPrice(currentPrice + 1, currentPrice + 2);
+        vm.prank(priceAcceptor);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrailingAnchorOracleBase.UnexpectedPrice.selector, currentPrice, currentPrice - 2, currentPrice - 1
+            )
+        );
+        oracle.acceptPrice(currentPrice - 2, currentPrice - 1);
+
+        vm.prank(priceAcceptor);
+        oracle.acceptPrice(currentPrice, currentPrice + 1);
+        assertEq(_read().anchorPrice, currentPrice, "the lower edge");
+        source.setCurrentPrice(currentPrice + 7);
+        vm.prank(priceAcceptor);
+        oracle.acceptPrice(currentPrice + 6, currentPrice + 7);
+        assertEq(_read().anchorPrice, currentPrice + 7, "the upper edge");
+    }
+
+    /// @dev An acceptance needs no time since the anchor moved and runs during a suspension.
+    function test_acceptPrice_inTheSeedsBlockDuringSuspension() public {
+        vm.prank(manager);
+        oracle.setPricingResumesAt(uint40(START + 1 days));
+        source.setCurrentPrice(INITIAL_PRICE + 1);
+        vm.prank(priceAcceptor);
+        oracle.acceptPrice(INITIAL_PRICE + 1, INITIAL_PRICE + 1);
+        assertEq(_read().anchorPrice, INITIAL_PRICE + 1, "accepted in the seed's block");
+        assertEq(_read().anchorAt, START, "at the seed's time");
+    }
+
+    function testRevert_acceptPrice_sourceFails() public {
+        source.setCurrentPrice(0);
+        vm.prank(priceAcceptor);
+        vm.expectRevert(TrailingAnchorOracleBase.ZeroPrice.selector);
+        oracle.acceptPrice(0, 0);
+        // A zero price outside the range is refused as a zero price, not as an unexpected one.
+        vm.prank(priceAcceptor);
+        vm.expectRevert(TrailingAnchorOracleBase.ZeroPrice.selector);
+        oracle.acceptPrice(1, type(uint256).max);
+        source.setCurrentPrice(INITIAL_PRICE);
+        source.setDown(true);
+        vm.prank(priceAcceptor);
+        vm.expectRevert(SourceDown.selector);
+        oracle.acceptPrice(0, type(uint256).max);
+    }
+
+    // ---
+    // PRICING SUSPENSION
+    // ---
+
+    function testRevert_setPricingResumesAt_notManager() public {
+        bytes32 role = oracle.MANAGER_ROLE();
+        address[3] memory callers = [anyone, admin, priceAcceptor];
+        for (uint256 i; i < callers.length; ++i) {
+            vm.expectRevert(
+                abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, callers[i], role)
+            );
+            vm.prank(callers[i]);
+            oracle.setPricingResumesAt(uint40(START + 1 days));
+        }
+    }
+
+    /// @dev `price()` reverts with the resume time until it, and returns from that second on.
+    function test_setPricingResumesAt_suspendsUntilTheTime() public {
+        vm.expectEmit(address(oracle));
+        emit TrailingAnchorOracleBase.PricingResumesAtSet(uint40(START + 1 days));
+        vm.prank(manager);
+        oracle.setPricingResumesAt(uint40(START + 1 days));
+        vm.warp(START + 1 days - 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(TrailingAnchorOracleBase.PricingSuspended.selector, uint40(START + 1 days))
+        );
+        oracle.price();
+        vm.warp(START + 1 days);
+        assertEq(oracle.price(), INITIAL_PRICE * priceScale, "priced at the resume time");
+    }
+
+    /// @dev At most `MAX_PRICING_SUSPENSION` from the call, inclusive.
+    function test_setPricingResumesAt_capEdge() public {
+        vm.startPrank(manager);
+        oracle.setPricingResumesAt(uint40(START + 7 days));
+        assertEq(oracle.pricingResumesAt(), START + 7 days, "the cap itself");
+        vm.expectRevert(
+            abi.encodeWithSelector(TrailingAnchorOracleBase.InvalidPricingResumesAt.selector, START + 7 days + 1)
+        );
+        oracle.setPricingResumesAt(uint40(START + 7 days + 1));
+        vm.stopPrank();
+        assertEq(oracle.MAX_PRICING_SUSPENSION(), 7 days, "MAX_PRICING_SUSPENSION");
+    }
+
+    /// @dev A time not in the future lifts a suspension at once.
+    function test_setPricingResumesAt_pastLifts() public {
+        vm.startPrank(manager);
+        oracle.setPricingResumesAt(uint40(START + 3 days));
+        oracle.setPricingResumesAt(uint40(START));
+        vm.stopPrank();
+        assertEq(oracle.price(), INITIAL_PRICE * priceScale, "lifted");
+    }
+
+    /// @dev Updates run during a suspension: the anchor follows the price and a pending anchor is recorded.
+    function test_setPricingResumesAt_updatesRunDuringSuspension() public {
+        _withoutFloor();
+        vm.prank(manager);
+        oracle.setPricingResumesAt(uint40(START + 3 days));
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.9e18, WAD));
+        _update();
+        assertGt(_read().pendingAnchorAt, 0, "a pending anchor");
+        vm.warp(START + DELAY);
+        _update();
+        assertEq(_read().anchorPrice, Math.mulDiv(INITIAL_PRICE, 0.9e18, WAD), "re-anchored while suspended");
+    }
+
+    // ---
+    // PARAMETERS
+    // ---
+
+    /// @dev Only the manager: neither the admin nor the price acceptor.
+    function testRevert_setParameters_notManager() public {
+        bytes32 role = oracle.MANAGER_ROLE();
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        address[3] memory callers = [anyone, admin, priceAcceptor];
+        for (uint256 i; i < callers.length; ++i) {
+            vm.expectRevert(
+                abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, callers[i], role)
+            );
+            vm.prank(callers[i]);
+            oracle.setParameters(p);
+        }
+    }
+
+    /// @dev The manager stores every parameter at once; the anchor stays and the pending anchor is dropped.
+    function test_setParameters_storesAndDropsPendingAnchor() public {
+        source.setCurrentPrice(Math.mulDiv(INITIAL_PRICE, 0.9e18, WAD));
+        _update();
+        vm.warp(START + 3 days);
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleBase.Parameters({
+            maxPriceAboveAnchor: 0.001e18,
+            maxPriceBelowAnchor: 0.002e18,
+            maxAnchorContinuousRiseRate: 0.1e18,
+            maxAnchorContinuousFallRate: 0.05e18,
+            maxAnchorBelowBase: 0.02e18,
+            maxAnchorAboveBase: 0.005e18,
+            reanchorDelay: 12 hours,
+            reanchorWindow: 2 days
+        });
+        TrailingAnchorOracleState memory expected = _read().withParameters(p);
+        vm.expectEmit(address(oracle));
+        emit TrailingAnchorOracleBase.ParametersSet(p);
+        vm.expectEmit(address(oracle));
+        emit TrailingAnchorOracleBase.PendingAnchorCleared();
+        vm.prank(manager);
+        oracle.setParameters(p);
+        _assertState(expected);
+    }
+
+    /// @dev Narrower bounds apply at once: they refuse a price the old ones took.
+    function test_setParameters_boundsApplyAtOnce() public {
+        uint256 currentPrice = Math.mulDiv(INITIAL_PRICE, 1.0004e18, WAD);
+        source.setCurrentPrice(currentPrice);
+        assertEq(oracle.price(), currentPrice * priceScale, "0.04% up inside 0.05%");
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxPriceAboveAnchor = 0.0003e18;
+        _setParameters(p);
+        assertFalse(_read().withinBounds(currentPrice), "0.04% up outside 0.03%");
+        _assertPriceMatchesRule();
+    }
+
+    /// @dev A narrower `maxAnchorBelowBase` leaves an anchor already under its floor where it is: no update lifts
+    ///      it, a drift does not lower it, and the next fall finds it pinned.
+    function test_setParameters_narrowerBelowBaseKeepsADeeperAnchor() public {
+        uint256 fallen = Math.mulDiv(INITIAL_PRICE, 0.992e18, WAD);
+        source.setCurrentPrice(fallen);
+        _update();
+        vm.warp(START + DELAY);
+        _update();
+        assertEq(_read().anchorPrice, fallen, "0.8% down, inside the 1% floor");
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxAnchorBelowBase = 0.005e18;
+        _setParameters(p);
+        vm.warp(block.timestamp + 1 days);
+        assertFalse(_update().anchorSet, "not lifted onto the narrower floor");
+        source.setCurrentPrice(_lower(fallen));
+        assertFalse(_update().anchorSet, "no drift under the anchor");
+        source.setCurrentPrice(Math.mulDiv(fallen, 0.99e18, WAD));
+        _update();
+        vm.warp(block.timestamp + DELAY);
+        assertFalse(_update().anchorSet, "pinned");
+        assertEq(_read().anchorPrice, fallen, "kept");
+    }
+
+    /// @dev A narrower `maxAnchorAboveBase` leaves an anchor already over its ceiling where it is: no update
+    ///      lowers it, a drift up moves it with the base price and keeps its gap over it, and the next rise finds
+    ///      it pinned.
+    function test_setParameters_narrowerAboveBaseKeepsAHigherAnchor() public {
+        uint256 risen = Math.mulDiv(INITIAL_PRICE, 1.0015e18, WAD);
+        source.setCurrentPrice(risen);
+        _update();
+        vm.warp(START + DELAY);
+        _update();
+        assertEq(_read().anchorPrice, risen, "0.15% up, inside the 0.2% ceiling");
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxAnchorAboveBase = 0.001e18;
+        _setParameters(p);
+        vm.warp(block.timestamp + 1 days);
+        assertFalse(_update().anchorSet, "not lowered onto the narrower ceiling");
+        vm.warp(block.timestamp + 1 days);
+        source.setCurrentPrice(_upper(risen));
+        _update();
+        uint256 step = _riseStep(risen, 2 days);
+        assertEq(_read().anchorPrice, risen + step, "a drift up");
+        assertEq(_read().basePrice, INITIAL_PRICE + step, "the gap kept");
+        source.setCurrentPrice(Math.mulDiv(risen + step, 1.001e18, WAD));
+        _update();
+        vm.warp(block.timestamp + DELAY);
+        assertFalse(_update().anchorSet, "pinned");
+        assertEq(_read().anchorPrice, risen + step, "kept");
+    }
+
+    /// @dev Each validator edge: the last valid value is taken and the first invalid one refused.
+    function test_setParameters_validatorEdges() public {
+        assertEq(oracle.MIN_REANCHOR_WINDOW(), 1 hours, "MIN_REANCHOR_WINDOW");
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        // One-wei bounds leave the delay rules room only with both rates off.
+        p.maxPriceAboveAnchor = 1;
+        p.maxPriceBelowAnchor = 1;
+        p.maxAnchorContinuousRiseRate = 0;
+        p.maxAnchorContinuousFallRate = 0;
+        _setParameters(p);
+        p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxPriceAboveAnchor = uint64(WAD - 1);
+        p.maxPriceBelowAnchor = uint64(WAD - 1);
+        _setParameters(p);
+        p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxAnchorContinuousRiseRate = uint64(WAD);
+        p.maxAnchorContinuousFallRate = 0;
+        p.reanchorDelay = 1 hours;
+        p.reanchorWindow = 1 hours;
+        _setParameters(p);
+        // The longest delay the rise rule takes: e^(6% × delay / 365 days) − 1 stays at most 0.05%.
+        p = TrailingAnchorOracleModel.defaultParameters();
+        p.reanchorDelay = uint40(LONGEST_DELAY_FOR_RISE);
+        _setParameters(p);
+        // The longest delay the fall rule takes, with the rise rate off: 1 − e^(−1% × delay / 365 days) stays at
+        // most 0.1%.
+        p.maxAnchorContinuousRiseRate = 0;
+        p.reanchorDelay = uint40(LONGEST_DELAY_FOR_FALL);
+        _setParameters(p);
+        p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxAnchorBelowBase = 0;
+        _setParameters(p);
+        p.maxAnchorBelowBase = uint64(WAD - 1);
+        _setParameters(p);
+        p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxAnchorAboveBase = 0;
+        _setParameters(p);
+        p.maxAnchorAboveBase = uint64(WAD - 1);
+        _setParameters(p);
+        (TrailingAnchorOracleBase.Parameters[] memory cases, bytes[] memory errors) = _invalidParameters();
+        for (uint256 i; i < cases.length; ++i) {
+            vm.prank(manager);
+            vm.expectRevert(errors[i]);
+            oracle.setParameters(cases[i]);
+        }
+    }
+
+    // ---
+    // STORAGE
+    // ---
+
+    /// @dev The base's state lives in the adapter's own namespace in four slots, low bits first, grouped by use:
+    ///      - the anchor price, the base price and the time of the anchor, which are all that a drift writes;
+    ///      - the two bounds and the two other times;
+    ///      - the two rates and the two distances from the base price;
+    ///      - the pending anchor price, the delay and the window.
+    function test_storage_namespaceLayout() public {
+        vm.prank(manager);
+        oracle.setPricingResumesAt(uint40(START + 1 days));
+        vm.warp(START + 1 hours);
+        uint256 currentPrice = Math.mulDiv(INITIAL_PRICE, 0.9e18, WAD);
+        source.setCurrentPrice(currentPrice);
+        _update();
+        bytes32 base = TrailingAnchorOracleModel.namespaceSlot(_namespace());
+        uint256 first = uint256(vm.load(address(oracle), base));
+        assertEq(uint104(first), INITIAL_PRICE, "anchorPrice in bits 0-103");
+        assertEq(uint104(first >> 104), INITIAL_PRICE, "basePrice in bits 104-207");
+        assertEq(uint40(first >> 208), START, "anchorAt in bits 208-247");
+        assertEq(first >> 248, 0, "nothing above in the first slot");
+        uint256 second = uint256(vm.load(address(oracle), _slot(base, 1)));
+        assertEq(uint64(second), MAX_PRICE_ABOVE_ANCHOR, "maxPriceAboveAnchor in bits 0-63");
+        assertEq(uint64(second >> 64), MAX_PRICE_BELOW_ANCHOR, "maxPriceBelowAnchor in bits 64-127");
+        assertEq(uint40(second >> 128), START + 1 days, "pricingResumesAt in bits 128-167");
+        assertEq(uint40(second >> 168), START + 1 hours, "pendingAnchorAt in bits 168-207");
+        assertEq(second >> 208, 0, "nothing above in the second slot");
+        uint256 third = uint256(vm.load(address(oracle), _slot(base, 2)));
+        assertEq(uint64(third), MAX_ANCHOR_CONTINUOUS_RISE_RATE, "maxAnchorContinuousRiseRate in bits 0-63");
+        assertEq(uint64(third >> 64), MAX_ANCHOR_CONTINUOUS_FALL_RATE, "maxAnchorContinuousFallRate in bits 64-127");
+        assertEq(uint64(third >> 128), MAX_ANCHOR_BELOW_BASE, "maxAnchorBelowBase in bits 128-191");
+        assertEq(uint64(third >> 192), MAX_ANCHOR_ABOVE_BASE, "maxAnchorAboveBase in bits 192-255");
+        uint256 fourth = uint256(vm.load(address(oracle), _slot(base, 3)));
+        assertEq(uint104(fourth), currentPrice, "pendingAnchorPrice in bits 0-103");
+        assertEq(uint40(fourth >> 104), DELAY, "reanchorDelay in bits 104-143");
+        assertEq(uint40(fourth >> 144), WINDOW, "reanchorWindow in bits 144-183");
+        assertEq(fourth >> 184, 0, "nothing above in the fourth slot");
+        assertEq(uint256(vm.load(address(oracle), _slot(base, 4))), 0, "nothing in the fifth slot");
+    }
+
+    /// @dev An update that has nothing to move writes no slot. A current price equal to the anchor reads the first
+    ///      two slots of the namespace only. A second update in the block of a move also reads the rates.
+    function test_updateAnchor_noMoveWritesNothing() public {
+        vm.warp(START + 1 days);
+        _assertUpdateReadsOnly(2);
+
+        source.setCurrentPrice(_upper(INITIAL_PRICE));
+        oracle.updateAnchor();
+        assertGt(oracle.anchorPrice(), INITIAL_PRICE, "the anchor moved");
+        _assertUpdateReadsOnly(3);
+    }
+
+    /// @dev Asserts that an update reads only the first `slotCount` slots of the namespace and writes none.
+    function _assertUpdateReadsOnly(uint256 slotCount) internal {
+        bytes32 base = TrailingAnchorOracleModel.namespaceSlot(_namespace());
+        uint256 anchorBefore = oracle.anchorPrice();
+        vm.record();
+        oracle.updateAnchor();
+        (bytes32[] memory reads, bytes32[] memory writes) = vm.accesses(address(oracle));
+        for (uint256 i; i < reads.length; ++i) {
+            if (reads[i] == IMPLEMENTATION_SLOT) continue;
+            assertLt(uint256(reads[i]) - uint256(base), slotCount, "a slot past the expected ones");
+        }
+        assertEq(writes.length, 0, "a write");
+        assertEq(oracle.anchorPrice(), anchorBefore, "the anchor moved");
+    }
+
+    /// @dev A drift, the usual update of a keeper, reads the first three slots of the namespace and writes the first
+    ///      slot only. A drift up also raises the base price, which is in the same slot.
+    function test_updateAnchor_driftReadsThreeSlots() public {
+        bytes32 base = TrailingAnchorOracleModel.namespaceSlot(_namespace());
+        vm.warp(START + 1 days);
+        source.setCurrentPrice(_lower(INITIAL_PRICE));
+        vm.record();
+        oracle.updateAnchor();
+        (bytes32[] memory reads, bytes32[] memory writes) = vm.accesses(address(oracle));
+        for (uint256 i; i < reads.length; ++i) {
+            if (reads[i] == IMPLEMENTATION_SLOT) continue;
+            assertLt(uint256(reads[i]) - uint256(base), 3, "a slot other than the first three");
+        }
+        for (uint256 i; i < writes.length; ++i) {
+            assertEq(writes[i], base, "a drift down writes another slot than the first");
+        }
+
+        vm.warp(START + 2 days);
+        source.setCurrentPrice(_upper(oracle.anchorPrice()));
+        vm.record();
+        oracle.updateAnchor();
+        (reads, writes) = vm.accesses(address(oracle));
+        for (uint256 i; i < reads.length; ++i) {
+            if (reads[i] == IMPLEMENTATION_SLOT) continue;
+            assertLt(uint256(reads[i]) - uint256(base), 3, "a slot other than the first three");
+        }
+        for (uint256 i; i < writes.length; ++i) {
+            assertEq(writes[i], base, "a drift up writes another slot than the first");
+        }
+        assertGt(oracle.basePrice(), INITIAL_PRICE, "the drift up raised the base price");
+    }
+
+    // ---
+    // HELPERS
+    // ---
+
+    function _read() internal view returns (TrailingAnchorOracleState memory) {
+        return TrailingAnchorOracleModel.read(oracle);
+    }
+
+    /// @dev Runs `updateAnchor()` as anyone and checks it against the model: the revert, or the stored state and the
+    ///      exact logs.
+    function _update() internal returns (TrailingAnchorOracleUpdate memory u) {
+        TrailingAnchorOracleState memory s = _read();
+        u = s.update(source.currentPrice(), source.isDown(), block.timestamp);
+        if (u.revertData.length != 0) {
+            vm.expectRevert(u.revertData);
+            oracle.updateAnchor();
+            _assertState(s);
+            return u;
+        }
+        vm.recordLogs();
+        vm.prank(anyone);
+        TrailingAnchorOracleBase.UpdateOutcome outcome = oracle.updateAnchor();
+        assertEq(uint8(outcome), uint8(u.outcome), "outcome");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 i;
+        if (u.anchorSet) {
+            assertEq(logs[i].topics[0], TrailingAnchorOracleBase.AnchorSet.selector, "AnchorSet");
+            assertEq(logs[i].data, abi.encode(u.next.anchorPrice, uint40(block.timestamp), false), "AnchorSet data");
+            ++i;
+        }
+        if (u.pendingAnchorSet) {
+            assertEq(logs[i].topics[0], TrailingAnchorOracleBase.PendingAnchorSet.selector, "PendingAnchorSet");
+            assertEq(
+                logs[i].data, abi.encode(u.next.pendingAnchorPrice, uint40(block.timestamp)), "PendingAnchorSet data"
+            );
+            ++i;
+        }
+        if (u.pendingAnchorCleared) {
+            assertEq(logs[i].topics[0], TrailingAnchorOracleBase.PendingAnchorCleared.selector, "PendingAnchorCleared");
+            ++i;
+        }
+        assertEq(logs[i].topics[0], TrailingAnchorOracleBase.AnchorUpdated.selector, "AnchorUpdated last");
+        assertEq(logs[i].topics[1], bytes32(uint256(uint8(u.outcome))), "AnchorUpdated outcome");
+        assertEq(logs[i].data, abi.encode(source.currentPrice()), "AnchorUpdated currentPrice");
+        assertEq(logs.length, i + 1, "no other logs");
+        _assertState(u.next);
+    }
+
+    /// @dev Runs `_update()` and checks the outcome it returned against `expected`, written out in the test.
+    function _assertOutcome(TrailingAnchorOracleBase.UpdateOutcome expected) internal {
+        assertEq(uint8(_update().outcome), uint8(expected), "outcome");
+    }
+
+    /// @dev Updates, then waits for each pending anchor's window, until the price sits within the bounds. Returns the
+    ///      number of re-anchors.
+    function _walk() internal returns (uint256 reanchors) {
+        _update();
+        while (!_read().withinBounds(source.currentPrice())) {
+            vm.warp(_read().pendingAnchorAt + _read().reanchorDelay);
+            assertTrue(_update().anchorSet, "re-anchored when the window opened");
+            ++reanchors;
+        }
+    }
+
+    /// @dev `price()` against the rules over the stored state, the source and the time.
+    function _assertPriceMatchesRule() internal {
+        TrailingAnchorOracleState memory s = _read();
+        bytes memory expected = s.priceRevert(source.currentPrice(), source.isDown(), block.timestamp);
+        if (expected.length != 0) {
+            vm.expectRevert(expected);
+            oracle.price();
+            return;
+        }
+        assertEq(oracle.price(), source.currentPrice() * priceScale, "price != current price x PRICE_SCALE");
+    }
+
+    function _assertState(TrailingAnchorOracleState memory e) internal view {
+        TrailingAnchorOracleState memory s = _read();
+        assertEq(s.anchorPrice, e.anchorPrice, "anchorPrice");
+        assertEq(s.anchorAt, e.anchorAt, "anchorAt");
+        assertEq(s.pricingResumesAt, e.pricingResumesAt, "pricingResumesAt");
+        assertEq(s.pendingAnchorPrice, e.pendingAnchorPrice, "pendingAnchorPrice");
+        assertEq(s.pendingAnchorAt, e.pendingAnchorAt, "pendingAnchorAt");
+        assertEq(s.basePrice, e.basePrice, "basePrice");
+        assertEq(s.maxPriceAboveAnchor, e.maxPriceAboveAnchor, "maxPriceAboveAnchor");
+        assertEq(s.maxPriceBelowAnchor, e.maxPriceBelowAnchor, "maxPriceBelowAnchor");
+        assertEq(s.maxAnchorContinuousRiseRate, e.maxAnchorContinuousRiseRate, "maxAnchorContinuousRiseRate");
+        assertEq(s.maxAnchorContinuousFallRate, e.maxAnchorContinuousFallRate, "maxAnchorContinuousFallRate");
+        assertEq(s.maxAnchorBelowBase, e.maxAnchorBelowBase, "maxAnchorBelowBase");
+        assertEq(s.maxAnchorAboveBase, e.maxAnchorAboveBase, "maxAnchorAboveBase");
+        assertEq(s.reanchorDelay, e.reanchorDelay, "reanchorDelay");
+        assertEq(s.reanchorWindow, e.reanchorWindow, "reanchorWindow");
+    }
+
+    function _assertParameters(TrailingAnchorOracleState memory s, TrailingAnchorOracleBase.Parameters memory p)
+        internal
+        pure
+    {
+        assertEq(s.maxPriceAboveAnchor, p.maxPriceAboveAnchor, "maxPriceAboveAnchor");
+        assertEq(s.maxPriceBelowAnchor, p.maxPriceBelowAnchor, "maxPriceBelowAnchor");
+        assertEq(s.maxAnchorContinuousRiseRate, p.maxAnchorContinuousRiseRate, "maxAnchorContinuousRiseRate");
+        assertEq(s.maxAnchorContinuousFallRate, p.maxAnchorContinuousFallRate, "maxAnchorContinuousFallRate");
+        assertEq(s.maxAnchorBelowBase, p.maxAnchorBelowBase, "maxAnchorBelowBase");
+        assertEq(s.maxAnchorAboveBase, p.maxAnchorAboveBase, "maxAnchorAboveBase");
+        assertEq(s.reanchorDelay, p.reanchorDelay, "reanchorDelay");
+        assertEq(s.reanchorWindow, p.reanchorWindow, "reanchorWindow");
+    }
+
+    function _setParameters(TrailingAnchorOracleBase.Parameters memory p) internal {
+        assertEq(TrailingAnchorOracleModel.parametersRevert(p).length, 0, "the model takes the parameters");
+        vm.prank(manager);
+        oracle.setParameters(p);
+    }
+
+    /// @dev Moves the floor out of the way, a wei or two above zero, for the tests of the re-anchor mechanics on falls
+    ///      past the working floor; the floor has tests of its own.
+    function _withoutFloor() internal {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxAnchorBelowBase = uint64(WAD - 1);
+        _setParameters(p);
+    }
+
+    /// @dev Moves the ceiling out of the way, almost a whole price over the base price, for the tests of the
+    ///      re-anchor mechanics on rises past the working ceiling; the ceiling has tests of its own.
+    function _withoutCeiling() internal {
+        TrailingAnchorOracleBase.Parameters memory p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxAnchorAboveBase = uint64(WAD - 1);
+        _setParameters(p);
+    }
+
+    /// @dev `basePrice` × (1 − `MAX_ANCHOR_BELOW_BASE`), the distance term rounded down.
+    function _floor(uint256 basePrice) internal pure returns (uint256) {
+        return basePrice - Math.mulDiv(basePrice, MAX_ANCHOR_BELOW_BASE, WAD);
+    }
+
+    /// @dev `basePrice` × (1 + `MAX_ANCHOR_ABOVE_BASE`), the distance term rounded down.
+    function _ceiling(uint256 basePrice) internal pure returns (uint256) {
+        return basePrice + Math.mulDiv(basePrice, MAX_ANCHOR_ABOVE_BASE, WAD);
+    }
+
+    /// @dev One parameter past its range in each case, with the error that names that parameter: a zero bound, a
+    ///      bound at a whole price, a rate over 1e18, a delay under an hour or longer than a rate takes to cover its
+    ///      bound, a zero window, and a `maxAnchorBelowBase` or `maxAnchorAboveBase` of a whole price.
+    function _invalidParameters()
+        internal
+        pure
+        returns (TrailingAnchorOracleBase.Parameters[] memory cases, bytes[] memory errors)
+    {
+        cases = new TrailingAnchorOracleBase.Parameters[](12);
+        errors = new bytes[](12);
+        for (uint256 i; i < cases.length; ++i) {
+            cases[i] = TrailingAnchorOracleModel.defaultParameters();
+        }
+        // With the rate on its side off, the delay rule takes a zero bound, so only the bound's own check refuses it.
+        cases[0].maxPriceAboveAnchor = 0;
+        cases[0].maxAnchorContinuousRiseRate = 0;
+        cases[1].maxPriceBelowAnchor = 0;
+        cases[1].maxAnchorContinuousFallRate = 0;
+        cases[2].maxPriceAboveAnchor = uint64(WAD);
+        cases[3].maxPriceBelowAnchor = uint64(WAD);
+        // Over a one-hour delay this rate covers 0.011%, inside the 0.05% bound, so only the rate's own limit
+        // refuses it.
+        cases[4].maxAnchorContinuousRiseRate = uint64(WAD + 1);
+        cases[4].reanchorDelay = 1 hours;
+        cases[5].maxAnchorContinuousFallRate = uint64(WAD + 1);
+        cases[6].reanchorDelay = 1 hours - 1;
+        cases[7].reanchorWindow = 1 hours - 1;
+        cases[8].reanchorDelay = uint40(LONGEST_DELAY_FOR_RISE + 1);
+        cases[9].maxAnchorBelowBase = uint64(WAD);
+        cases[10].maxAnchorAboveBase = uint64(WAD);
+        cases[11].maxAnchorContinuousRiseRate = 0;
+        cases[11].reanchorDelay = uint40(LONGEST_DELAY_FOR_FALL + 1);
+
+        errors[0] = abi.encodeWithSelector(TrailingAnchorOracleBase.MaxPriceAboveAnchorIsZero.selector);
+        errors[1] = abi.encodeWithSelector(TrailingAnchorOracleBase.MaxPriceBelowAnchorIsZero.selector);
+        errors[2] = abi.encodeWithSelector(TrailingAnchorOracleBase.MaxPriceAboveAnchorNotBelowWad.selector, WAD);
+        errors[3] = abi.encodeWithSelector(TrailingAnchorOracleBase.MaxPriceBelowAnchorNotBelowWad.selector, WAD);
+        errors[4] =
+            abi.encodeWithSelector(TrailingAnchorOracleBase.MaxAnchorContinuousRiseRateExceedsWad.selector, WAD + 1);
+        errors[5] =
+            abi.encodeWithSelector(TrailingAnchorOracleBase.MaxAnchorContinuousFallRateExceedsWad.selector, WAD + 1);
+        errors[6] = abi.encodeWithSelector(
+            TrailingAnchorOracleBase.ReanchorDelayBelowMinReanchorDelay.selector, 1 hours - 1, 1 hours
+        );
+        errors[7] = abi.encodeWithSelector(
+            TrailingAnchorOracleBase.ReanchorWindowBelowMinReanchorWindow.selector, 1 hours - 1, 1 hours
+        );
+        errors[8] = abi.encodeWithSelector(
+            TrailingAnchorOracleBase.RiseOverDelayExceedsMaxPriceAboveAnchor.selector,
+            TrailingAnchorOracleModel.compoundedRise(MAX_ANCHOR_CONTINUOUS_RISE_RATE, LONGEST_DELAY_FOR_RISE + 1),
+            MAX_PRICE_ABOVE_ANCHOR
+        );
+        errors[9] = abi.encodeWithSelector(TrailingAnchorOracleBase.MaxAnchorBelowBaseNotBelowWad.selector, WAD);
+        errors[10] = abi.encodeWithSelector(TrailingAnchorOracleBase.MaxAnchorAboveBaseNotBelowWad.selector, WAD);
+        errors[11] = abi.encodeWithSelector(
+            TrailingAnchorOracleBase.FallOverDelayExceedsMaxPriceBelowAnchor.selector,
+            TrailingAnchorOracleModel.compoundedFall(MAX_ANCHOR_CONTINUOUS_FALL_RATE, LONGEST_DELAY_FOR_FALL + 1),
+            MAX_PRICE_BELOW_ANCHOR
+        );
+        for (uint256 i; i < cases.length; ++i) {
+            assertEq(TrailingAnchorOracleModel.parametersRevert(cases[i]), errors[i], "the model gives the error");
+        }
+    }
+
+    /// @dev `anchor` × (e^x − 1) for x = MAX_ANCHOR_CONTINUOUS_RISE_RATE × elapsed / 365 days, with e^x − 1 as
+    ///      x + x²/2 + x³/6, each term rounded down.
+    function _riseStep(uint256 anchor, uint256 elapsed) internal pure returns (uint256) {
+        uint256 x = MAX_ANCHOR_CONTINUOUS_RISE_RATE * elapsed / YEAR;
+        uint256 x2 = x * x / (2 * WAD);
+        uint256 x3 = x2 * x / (3 * WAD);
+        return Math.mulDiv(anchor, x + x2 + x3, WAD);
+    }
+
+    /// @dev `anchor` × (1 − e^(−x)) for x = MAX_ANCHOR_CONTINUOUS_FALL_RATE × elapsed / 365 days, with
+    ///      1 − e^(−x) as c / (1 + c) and c = x + x²/2 + x³/6, each step rounded down.
+    function _fallStep(uint256 anchor, uint256 elapsed) internal pure returns (uint256) {
+        uint256 x = MAX_ANCHOR_CONTINUOUS_FALL_RATE * elapsed / YEAR;
+        uint256 x2 = x * x / (2 * WAD);
+        uint256 c = x + x2 + x2 * x / (3 * WAD);
+        return Math.mulDiv(anchor, c * WAD / (WAD + c), WAD);
+    }
+
+    /// @dev The working parameters with a 10% lower bound and the floor a wei or two above zero, so that one update
+    ///      can follow a year of fall.
+    function _wideFall() internal pure returns (TrailingAnchorOracleBase.Parameters memory p) {
+        p = TrailingAnchorOracleModel.defaultParameters();
+        p.maxPriceBelowAnchor = 0.1e18;
+        p.maxAnchorBelowBase = uint64(WAD - 1);
+    }
+
+    function _lower(uint256 center) internal pure returns (uint256) {
+        return Math.mulDiv(center, WAD - MAX_PRICE_BELOW_ANCHOR, WAD);
+    }
+
+    function _upper(uint256 center) internal pure returns (uint256) {
+        return Math.mulDiv(center, WAD + MAX_PRICE_ABOVE_ANCHOR, WAD);
+    }
+
+    function _slot(bytes32 base, uint256 offset) internal pure returns (bytes32) {
+        return bytes32(uint256(base) + offset);
+    }
+}
+
+contract TrailingAnchorOracleBaseUsdyTest is TrailingAnchorOracleBaseTest, UsdyNavOracleFixture {
+    /// @dev The oracle stores prices in 104 bits, about 2.03e13 whole units at 18 decimals. A source price one above
+    ///      that range is refused, as a pending anchor and as an accepted price.
+    function testRevert_priceAboveTheStoredRange() public {
+        uint256 tooHigh = uint256(type(uint104).max) + 1;
+        source.setCurrentPrice(tooHigh);
+        vm.expectRevert(abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 104, tooHigh));
+        oracle.updateAnchor();
+        vm.prank(priceAcceptor);
+        vm.expectRevert(abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 104, tooHigh));
+        oracle.acceptPrice(0, type(uint256).max);
+    }
+}
+
+contract TrailingAnchorOracleBaseCentrifugeTest is TrailingAnchorOracleBaseTest, CentrifugeNavOracleFixture {}
+
+/// @notice An upgrade behind one proxy to a new version of the same adapter keeps the state.
+contract TrailingAnchorOracleUpgradeTest is Test {
+    using TrailingAnchorOracleModel for TrailingAnchorOracleState;
+
+    uint256 internal constant START = 1_760_000_000;
+    uint256 internal constant INITIAL_PRICE = 1.112233445566778899e18;
+
+    MockERC20 internal loan;
+    MockERC20 internal usdy;
+    MockOndoPriceGetter internal getter;
+    TrailingAnchorOracleBase internal oracle;
+
+    address internal admin = makeAddr("admin");
+    address internal manager = makeAddr("manager");
+
+    function setUp() public {
+        vm.warp(START);
+        loan = new MockERC20("USD Coin", "USDC", 6);
+        usdy = new MockERC20("Ondo US Dollar Yield", "USDY", 18);
+        getter = new MockOndoPriceGetter();
+        getter.setCurrentPrice(INITIAL_PRICE);
+        address impl = address(new UsdyNavOracle(address(getter), address(loan), address(usdy)));
+        oracle = TrailingAnchorOracleBase(
+            address(new OssifiableProxy(impl, admin, TrailingAnchorOracleModel.initializeCall(admin)))
+        );
+        bytes32 managerRole = oracle.MANAGER_ROLE();
+        vm.startPrank(admin);
+        oracle.grantRole(managerRole, manager);
+        vm.stopPrank();
+    }
+
+    /// @dev A drift, a pending anchor and a suspension all survive an upgrade to a new version of the same adapter.
+    function test_upgrade_sameAdapterKeepsState() public {
+        vm.warp(START + 1 days);
+        getter.setCurrentPrice(INITIAL_PRICE + 1);
+        oracle.updateAnchor();
+        getter.setCurrentPrice(INITIAL_PRICE / 2);
+        oracle.updateAnchor();
+        vm.prank(manager);
+        oracle.setPricingResumesAt(uint40(START + 2 days));
+        TrailingAnchorOracleState memory before = TrailingAnchorOracleModel.read(oracle);
+        assertGt(before.pendingAnchorAt, 0, "a pending anchor");
+
+        _upgradeTo(address(new UsdyNavOracle(address(getter), address(loan), address(usdy))));
+        TrailingAnchorOracleState memory s = TrailingAnchorOracleModel.read(oracle);
+        assertEq(abi.encode(s), abi.encode(before), "every stored value");
+        vm.warp(START + 2 days);
+        getter.setCurrentPrice(INITIAL_PRICE + 1);
+        assertEq(oracle.price(), (INITIAL_PRICE + 1) * 1e6, "still priced");
+    }
+
+    function _upgradeTo(address impl) internal {
+        vm.prank(admin);
+        IOssifiableProxy(address(oracle)).proxy__upgradeTo(impl);
+    }
+}
