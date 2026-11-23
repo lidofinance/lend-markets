@@ -362,6 +362,13 @@ The constructor reverts with `UnsupportedDecimals` when `36 + loanDecimals < col
 | `UsdyNavOracle` | `(source, loanToken, collateralToken)` | Ondo's USDY oracle, `getPrice()` | USDY redemption value in USD, 18 decimals |
 | `CentrifugeNavOracle` | `(spoke, poolId, scId, maxPriceAge, loanToken, collateralToken)` | Spoke `markersPricePoolPerShare(poolId, scId)`, then `pricePoolPerShare(poolId, scId, false)` | share-class price in the pool currency, 18 decimals |
 
+The fork tests read these mainnet sources:
+
+| Source | Address | Collateral |
+|---|---|---|
+| Ondo's USDY oracle | `0xA0219AA5B31e65Bc920B5b6DFb8EdF0988121De0` | USDY |
+| Centrifuge Spoke | `0xEC3582fcDc34078a4B7a8c75a5a3AE46f48525aB` | JTRSY: pool `281474976710662`, share class `0x00010000000000060000000000000001` |
+
 `ZeroAddress` refuses a zero token, source or Spoke in a constructor, and a zero `admin` in `initialize`.
 
 `CentrifugeNavOracle` passes `checkValidity = false`, because the Spoke's own maximum age is unbounded on the deployed pools. The adapter adds its own checks:
