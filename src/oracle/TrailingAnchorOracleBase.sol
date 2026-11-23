@@ -384,21 +384,21 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     /// @dev e^(rate × elapsed / YEAR) − 1 from its first three Taylor terms, WAD, rounded down. The three terms are
     ///      at most the exact value. Thus the total rise in a time T is at most e^(rate × T) − 1 for any schedule
     ///      of updates.
-    function _compoundedRise(uint256 rate, uint256 elapsed) private pure returns (uint256) {
+    function _compoundedRise(uint256 rate, uint256 elapsed) private pure returns (uint256 rise) {
         return MathLib.wTaylorCompounded(Math.mulDiv(rate, elapsed, YEAR), 1);
     }
 
     /// @dev 1 − e^(−rate × elapsed / YEAR), computed as c / (1 + c) with c from `_compoundedRise`, WAD, rounded
     ///      down. The result is below 1e18. The total fall in a time T is at most 1 − e^(−rate × T) for any
     ///      schedule of updates.
-    function _compoundedFall(uint256 rate, uint256 elapsed) private pure returns (uint256) {
+    function _compoundedFall(uint256 rate, uint256 elapsed) private pure returns (uint256 fall) {
         uint256 compounded = _compoundedRise(rate, elapsed);
         return Math.mulDiv(compounded, WAD, WAD + compounded);
     }
 
     /// @dev The lowest anchor that an update can set: the floor, or the anchor when it is already below the floor.
     ///      Floor = `basePrice` × (1 − maxAnchorBelowBase), with the subtracted part rounded down.
-    function _lowestAnchor() private view returns (uint256) {
+    function _lowestAnchor() private view returns (uint256 lowestAnchor) {
         uint256 base = basePrice;
         uint256 floor = base - Math.mulDiv(base, maxAnchorBelowBase, WAD);
         return Math.min(floor, anchorPrice);
@@ -406,7 +406,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
 
     /// @dev The highest anchor that a re-anchor can set: the ceiling, or the anchor when it is already above the
     ///      ceiling. Ceiling = `basePrice` × (1 + maxAnchorAboveBase), with the added part rounded down.
-    function _highestAnchor() private view returns (uint256) {
+    function _highestAnchor() private view returns (uint256 highestAnchor) {
         uint256 base = basePrice;
         uint256 ceiling = base + Math.mulDiv(base, maxAnchorAboveBase, WAD);
         return Math.max(ceiling, anchorPrice);
@@ -425,7 +425,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     ///      the floor or the ceiling. An anchor that is already on or past that line does not move. After a move,
     ///      `currentPrice` becomes the next pending anchor if it is still outside the bounds. If not, the pending
     ///      anchor is dropped.
-    function _applyPendingAnchor(uint256 currentPrice) private returns (UpdateOutcome) {
+    function _applyPendingAnchor(uint256 currentPrice) private returns (UpdateOutcome outcome) {
         uint256 anchor = anchorPrice;
         uint256 pending = pendingAnchorPrice;
         uint256 newAnchorPrice;
@@ -444,7 +444,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
 
     /// @dev True if a pending anchor exists, has not expired, and is on the same side of the anchor as
     ///      `currentPrice`. The caller passes a price outside the bounds.
-    function _isPendingAnchorActive(uint256 currentPrice) private view returns (bool) {
+    function _isPendingAnchorActive(uint256 currentPrice) private view returns (bool active) {
         uint256 recordedAt = pendingAnchorAt;
         if (recordedAt == 0 || block.timestamp > recordedAt + reanchorDelay + reanchorWindow) return false;
         uint256 anchor = anchorPrice;
@@ -452,7 +452,7 @@ abstract contract TrailingAnchorOracleBase is AccessControlEnumerableUpgradeable
     }
 
     /// @dev True if `currentPrice` is inside the bounds. The two bounds are inclusive.
-    function _isWithinBounds(uint256 currentPrice) private view returns (bool) {
+    function _isWithinBounds(uint256 currentPrice) private view returns (bool withinBounds) {
         (uint256 lowerBound, uint256 upperBound) = _bounds();
         return currentPrice >= lowerBound && currentPrice <= upperBound;
     }
