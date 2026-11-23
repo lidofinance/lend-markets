@@ -5,6 +5,8 @@ import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {WAD} from "../../../../src/libs/Constants.sol";
+import {Market} from "../../../setup/Types.sol";
+import {MarketActions} from "../../../setup/MarketActions.sol";
 import {ForkStack} from "../../helpers/ForkStack.sol";
 
 /// @dev Ondo's USDY: its transfer blocklist.
@@ -20,8 +22,10 @@ interface IUsdyBlocklist {
 
 /// @notice A market whose collateral is Ondo's USDY, whatever its oracle: USDY's blocklist means a blocklisted
 ///         address cannot receive seized collateral, so it can neither liquidate (core `liquidate`) nor be a
-///         fallback-exit receiver (vault `fallbackExit` -> settle), while an eligible address can. On every market
-///         whose collateral has a USDY blocklist.
+///         fallback-exit receiver (vault `fallbackExit` -> settle), while an eligible address can. Nor can a
+///         blocklisted borrower post collateral, or anyone withdraw collateral to a blocklisted receiver; a borrower
+///         blocklisted after it borrows can still be liquidated. On every market whose collateral has a USDY
+///         blocklist.
 ///
 ///         State-robustness (a deployed market may already carry supply and borrow): actors are fresh and
 ///         market-clean, so balance checks are deltas; the borrow is sized off the live price and dust threshold;
@@ -29,6 +33,8 @@ interface IUsdyBlocklist {
 ///         idle is pinned to a known target; the settle leg requires the test borrower at the queue root and no bad
 ///         debt.
 contract UsdyForkTest is ForkStack {
+    using MarketActions for Market;
+
     address internal USDY;
     address internal LOAN;
     address internal USDY_BLOCKLIST;
@@ -91,14 +97,18 @@ contract UsdyForkTest is ForkStack {
         assertTrue(bl.isBlocked(account), "account blocklisted on USDY");
     }
 
-    function test_liquidate_blocklistedCannot_allowlistedCan() public {
-        uint256 borrowAssets = _borrowAssets();
-        _requireSupplyHeadroom(market, 2 * borrowAssets);
-        deal(LOAN, LENDER, 2 * borrowAssets);
+    /// @dev The lender supplies `assets` straight to the core.
+    function _supplyLiquidity(uint256 assets) internal {
+        _requireSupplyHeadroom(market, assets);
+        deal(LOAN, LENDER, assets);
         _approve(LOAN, LENDER, address(market.core), type(uint256).max);
         vm.prank(LENDER);
-        market.core.supply(market.params, 2 * borrowAssets, 0, LENDER, "");
+        market.core.supply(market.params, assets, 0, LENDER, "");
+    }
 
+    function test_liquidate_blocklistedCannot_allowlistedCan() public {
+        uint256 borrowAssets = _borrowAssets();
+        _supplyLiquidity(2 * borrowAssets);
         _openBorrow(borrowAssets);
         uint256 price = _setPriceForLtv(BORROWER, CRASH_LTV_LIQUIDATE);
 
@@ -176,5 +186,47 @@ contract UsdyForkTest is ForkStack {
             "collateral seized matches debt canceled at the crashed price"
         );
         assertEq(IERC20(USDY).balanceOf(KEEPER_GOOD) - balBefore, collateralSeized, "eligible receiver got the USDY");
+    }
+
+    /// @dev A blocklisted borrower cannot post its USDY: the core cannot pull it.
+    function testRevert_supplyCollateral_fromABlocklistedBorrower() public {
+        collateralIssuer.dealCollateral(BORROWER, lot);
+        _approve(USDY, BORROWER, address(market.core), lot);
+        _blocklist(BORROWER);
+        vm.prank(BORROWER);
+        vm.expectRevert(bytes("transferFrom reverted"));
+        market.core.supplyCollateral(market.params, lot, BORROWER, "");
+    }
+
+    /// @dev A borrower cannot withdraw its USDY to a blocklisted receiver, and can to itself.
+    function testRevert_withdrawCollateral_toABlocklistedReceiver() public {
+        collateralIssuer.dealCollateral(BORROWER, lot);
+        _approve(USDY, BORROWER, address(market.core), lot);
+        vm.prank(BORROWER);
+        market.core.supplyCollateral(market.params, lot, BORROWER, "");
+        _blocklist(KEEPER_BAD);
+
+        vm.prank(BORROWER);
+        vm.expectRevert(bytes("transfer reverted"));
+        market.core.withdrawCollateral(market.params, lot, BORROWER, KEEPER_BAD);
+
+        vm.prank(BORROWER);
+        market.core.withdrawCollateral(market.params, lot, BORROWER, BORROWER);
+        assertEq(IERC20(USDY).balanceOf(BORROWER), lot, "the borrower got its USDY back");
+    }
+
+    /// @dev A borrower blocklisted after it borrows can still be liquidated: the seized USDY goes from the core to the
+    ///      keeper, not through the borrower.
+    function test_liquidate_aBorrowerBlocklistedAfterBorrowing() public {
+        uint256 borrowAssets = _borrowAssets();
+        _supplyLiquidity(2 * borrowAssets);
+        _openBorrow(borrowAssets);
+        _blocklist(BORROWER);
+        _setPriceForLtv(BORROWER, _settleLtv());
+
+        uint256 shares = market.core.position(market.id, BORROWER).borrowShares / 4;
+        deal(LOAN, KEEPER_GOOD, market.repayAssets(shares));
+        (uint256 seized,) = market.liquidate(KEEPER_GOOD, BORROWER, 0, shares);
+        assertGt(seized, 0, "the keeper seized the blocklisted borrower's USDY");
     }
 }

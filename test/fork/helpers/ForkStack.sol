@@ -109,6 +109,8 @@ abstract contract ForkStack is Test {
     /// @notice The market's parameters, with its oracle and guardian registry.
     MarketDeployConfig internal parameters;
     MarketDeploymentResult internal deployment;
+    /// @notice Whether `_forkTarget` created the target's market in this run, rather than finding it at the block.
+    bool internal createdByTest;
     /// @notice The bound market.
     Market internal market;
     /// @notice The issuer of the bound market's collateral: deals it, allowlists its holders, publishes its price
@@ -124,12 +126,13 @@ abstract contract ForkStack is Test {
     uint256 internal lenderShares;
     uint256 internal borrowShares;
 
-    /// @notice Sets up the target with its market created and binds the market into `market`: the collateral's issuer
-    ///         adds the core to the collateral's allowlist where it keeps one and publishes the current price, so the
-    ///         test starts from a fresh one, and interest is accrued so the helpers' exact delta assertions hold from
-    ///         the first action. A run of a recorded network, `FORK_RUN=<network>`, fails for an unknown network and
-    ///         skips the markets of other networks and those their scripts record no deployment of, and with
-    ///         `FORK_RUN_PREPARE=false` it leaves an uncreated market as it is and skips it.
+    /// @notice Sets up the target with its market created and binds the market into `market`. A recorded market's
+    ///         collateral must already admit the core, a launch condition; for a market the test deploys, the
+    ///         collateral's issuer adds the core to its allowlist where it keeps one. The issuer publishes the current
+    ///         price, so the test starts from a fresh one, and interest is accrued so the helpers' exact delta
+    ///         assertions hold from the first action. A run of a recorded network, `FORK_RUN=<network>`, fails for an
+    ///         unknown network and skips the markets of other networks and those their scripts record no deployment
+    ///         of, and with `FORK_RUN_PREPARE=false` it leaves an uncreated market as it is and skips it.
     function _setUpTarget() internal {
         string memory run = vm.envOr("FORK_RUN", string(""));
         string memory path = vm.envOr("FORK_DEPLOY_SCRIPT", DEFAULT_DEPLOY_SCRIPT);
@@ -150,7 +153,11 @@ abstract contract ForkStack is Test {
         }
         market = _marketHandle(deployment);
         collateralIssuer = _collateralIssuerOf(market);
-        collateralIssuer.addToAllowlist(address(market.core));
+        if (deployment.deployedBlock != 0) {
+            assertTrue(_collateralAdmits(address(market.core)), "ForkStack: the collateral does not admit the core");
+        } else {
+            collateralIssuer.addToAllowlist(address(market.core));
+        }
         _setOraclePrice(market.oracle.price());
         _accrueInterest();
         lot = 2 * uint256(_activationConfig(market).minActivationAmount);
@@ -190,6 +197,7 @@ abstract contract ForkStack is Test {
             _logMarket(deployment, "existed at the block");
         } else if (createIfMissing) {
             _createMarket(deployment);
+            createdByTest = true;
         } else {
             _logMarket(deployment, "not created");
         }
@@ -351,6 +359,19 @@ abstract contract ForkStack is Test {
         market.activateCollateral();
         borrowShares = market.borrow(BORROWER, borrowAssets);
         _accrueInterest();
+    }
+
+    /// @notice Whether the collateral token lets `receiver` receive it: a transfer to it from a fresh holder, rolled
+    ///         back. A Centrifuge member list admits only its members, which hold no bundler adapter.
+    function _collateralAdmits(address receiver) internal returns (bool admits) {
+        uint256 snapshot = vm.snapshotState();
+        address source = makeAddr("fork.collateralProbe");
+        deal(address(market.collateralToken), source, 1);
+        vm.prank(source);
+        (bool ok, bytes memory returned) =
+            address(market.collateralToken).call(abi.encodeCall(IERC20.transfer, (receiver, 1)));
+        admits = ok && (returned.length == 0 || abi.decode(returned, (bool)));
+        vm.revertToState(snapshot);
     }
 
     /// @notice The market's live collateral activation config.

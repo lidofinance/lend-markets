@@ -6,6 +6,8 @@ import {ORACLE_PRICE_SCALE} from "@lido-lend/src/libraries/ConstantsLib.sol";
 import {SharesMathLib} from "@lido-lend/src/libraries/SharesMathLib.sol";
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {Call, IBundler3} from "@bundler3/src/interfaces/IBundler3.sol";
+import {LidoLendVaultAdapter} from "../../src/adapters/LidoLendVaultAdapter.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
 
@@ -122,13 +124,14 @@ contract VaultFallbackExitTest is ForkStack {
         internal
         view
     {
+        // The legs round in base units, whatever the tokens' decimals: the share conversions and each cut's floor.
         assertGt(loanAssets, 0, "redeem leg paid loan assets");
-        assertApproxEqAbs(loanAssets, idle, 1e15, "redeem leg drained the available idle");
+        assertApproxEqAbs(loanAssets, idle, 10, "redeem leg drained the available idle");
         assertGt(collateralSeized, 0, "settle leg seized collateral for the remainder");
         assertApproxEqAbs(
             collateralSeized,
             debtCanceled * ORACLE_PRICE_SCALE / mockedPrice,
-            1e6,
+            10,
             "collateral seized at the mocked price"
         );
         assertEq(market.loanToken.balanceOf(LENDER), loanAssets, "receiver got the loan assets");
@@ -147,6 +150,33 @@ contract VaultFallbackExitTest is ForkStack {
             market.vault.fallbackExit(shares, LENDER, LENDER, 0);
 
         _assertBothPhases(idle, loanAssets, collateralSeized, debtCanceled);
+    }
+
+    /// @dev The same exit through the deployed Bundler3 vault adapter: the vault pays the receiver directly, so the
+    ///      collateral leg works where the collateral admits only its holders and the core.
+    function test_bundledFallbackExit_redeemsAvailableThenSettles() public {
+        if (bundler.bundler == address(0)) vm.skip(true, "VaultFallbackExit: the network records no bundler");
+        uint256 idle = _setupExitWithIdle();
+        uint256 shares = market.vault.balanceOf(LENDER) / 2;
+        uint256 debtBefore = market.controller.positionOf(BORROWER).debtAssets;
+        vm.prank(LENDER);
+        market.vault.approve(bundler.vaultAdapter, shares);
+
+        Call[] memory bundle = new Call[](1);
+        bundle[0] = Call({
+            to: bundler.vaultAdapter,
+            data: abi.encodeCall(LidoLendVaultAdapter.fallbackExit, (address(market.vault), shares, 0, LENDER, 0, 0)),
+            value: 0,
+            skipRevert: false,
+            callbackHash: bytes32(0)
+        });
+        vm.prank(LENDER);
+        IBundler3(bundler.bundler).multicall(bundle);
+
+        uint256 debtCanceled = debtBefore - market.controller.positionOf(BORROWER).debtAssets;
+        _assertBothPhases(
+            idle, market.loanToken.balanceOf(LENDER), market.collateralToken.balanceOf(LENDER), debtCanceled
+        );
     }
 
     /* settle: liquidity-neutral targeted cut — seizes collateral, withdraws NO ordinary liquidity */
