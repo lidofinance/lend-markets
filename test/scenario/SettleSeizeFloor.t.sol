@@ -306,7 +306,7 @@ contract SettleSeizeFloorTest is LidoLendSetup {
 
     /// @dev The settlement policy under test: a one-loan-asset root slice and nothing else. At this price that slice
     ///      buys no collateral unit. A new root with no personal LTV then borrows all free liquidity.
-    ///      No market config in `script/config/markets` uses this policy. The test uses it to give the root an
+    ///      No market deploy script uses this policy. The test uses it to give the root an
     ///      unavailable cut.
     function _seedUnavailableRootInFullyBorrowedMarket() internal {
         Market storage m = protocol.markets[0];

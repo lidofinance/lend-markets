@@ -9,6 +9,6 @@ pragma solidity 0.8.28;
 //
 // This file is the way through: it accepts 0.8.28 itself and does nothing but import the
 // contract, so forge compiles it in its own 0.8.28 group and writes its artifact to `out/`.
-// From there `DeployBundler` and `BundlerSetup` deploy it with `deployCode`. The general adapter
+// From there `DeployBundlerBase` and `BundlerSetup` deploy it with `deployCode`. The general adapter
 // needs no anchor: its vendored copy lives in `src/adapters/`, which forge always compiles.
 import {Bundler3} from "@bundler3/src/Bundler3.sol";

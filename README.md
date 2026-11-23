@@ -18,23 +18,24 @@ Build:
 forge build --force
 ```
 
-Run the local test suite (everything except `test/fork/`):
+Run the local test suite (everything except the fork and deployment suites):
 
 ```sh
 forge test --no-match-path 'test/{fork,deployment}/**'
 ```
 
-The fork suites create their own Forge fork and prepare the lending stack using shared Solidity deployment
-functions. No Anvil or shell provisioning is required. The fresh fixture currently supports mainnet, with two
-WETH/wstETH markets, exit books, bundler and Vault V2; USDY is omitted from that fixture.
+The fork suites run once per market, each in its own Forge run; the deploy scripts deploy what the block lacks, and
+the market is created by its Easy Track activation motion. No Anvil or shell provisioning is required.
 
 ```sh
-make test-fork RPC_URL=<mainnet-archive-rpc>  # integrations + fresh-deployment acceptance
-make test-deployment RPC_URL=<mainnet-archive-rpc>         # deployment-state scenarios
+make -k test-fork                                    # the fork suites on every market
+make test-fork-mainnet-weth-wsteth                   # one market
+make test-deployment RPC_URL=<mainnet-archive-rpc>   # deployment-state scenarios
 ```
 
-`FORK_BLOCK=<block>` pins the source block. To exercise an existing deployment without preparing it, bind its
-a recorded Solidity deployment description instead:
+A network's markets need its RPC variable (`RPC_URL` for mainnet, `HOODI_RPC_URL` for Hoodi) and fail without it;
+they run at `FORK_BLOCK` and `HOODI_FORK_BLOCK` when set, else at the latest block. To exercise a deployment's recorded markets at
+the RPC's latest block without preparing them:
 
 ```sh
 make test-fork RUN=<run> PREPARE=false RPC_URL=<network-rpc>
@@ -43,7 +44,7 @@ make test-fork RUN=<run> PREPARE=false RPC_URL=<network-rpc>
 Deployment parameters and dependency addresses live in Solidity files under `script/deployment/<network>/`.
 Run `forge script <recipe.s.sol> --rpc-url <rpc>` to simulate; add `--broadcast` to deploy. Results and State Mate
 configurations are maintained manually. See [deployment instructions](script/DEPLOYMENT.md) for signer inputs,
-Solidity deployment descriptions and acceptance checks.
+Solidity deployment descriptions and State Mate checks.
 
 Format Solidity:
 
@@ -58,9 +59,9 @@ Most everyday commands are wrapped in a `Makefile`:
 ```sh
 make help            # list available targets
 make build           # forge build
-make test            # local + fork suites; RPC_URL required
-make test-local      # local suites only (excludes test/fork/); no RPC
-make test-fork       # integrations + acceptance on a fresh mainnet fixture
+make test            # every suite on the default fork target (mainnet weth-wsteth); RPC_URL required
+make test-local      # local suites only (excludes test/fork, test/deployment); no RPC
+make test-fork       # the fork suites once per market; run as make -k to go on past a failing market
 make fmt-check       # forge fmt --check on tracked paths (local only; CI does not fail on style)
 make lint            # forge lint
 make coverage        # coverage of the whole suite; fork suites revert without the fork setup
@@ -70,17 +71,16 @@ make slither         # static analysis (requires `slither` in PATH)
 make solhint         # stylistic/security checks (requires `solhint` in PATH)
 make ci              # everything CI runs on PRs: build + lint + local tests
 make test-deployment # missing/inert/active deployment-state scenarios on a mainnet fork
-make test-fork RUN=mainnet # prepare absent/inert WETH/wstETH markets on a fork of caller RPC
+make test-fork RUN=mainnet # the recorded mainnet markets on a fork of the caller's RPC; an inert one is created
 ```
 
-Environment variables are documented in `.env.example`. Copy it to `.env` and set `RPC_URL`; fork tests
-use a fresh stack by default. Explicit `make test-fork RUN=<run>` prepares missing/inert markets in an existing
-deployment; add `PREPARE=false` to test it without preparation. `RUN` and `PREPARE` select these modes only when
-passed on the Make command line; values from `.env` or the environment do not change the mode.
-Make sets `DEPLOYMENT_RUN` and `PREPARE_MARKETS` internally. For other inputs, command-line assignments take
+Environment variables are documented in `.env.example`. Copy it to `.env` and set `RPC_URL` (and `HOODI_RPC_URL`
+for the Hoodi markets). Explicit `make test-fork RUN=<run>` binds the recorded markets of an existing deployment and
+creates an inert one; add `PREPARE=false` to test them without preparation. `RUN` selects only when passed on the
+Make command line; a value from `.env` or the environment does not. For other inputs, command-line assignments take
 precedence over exported environment values, then `.env`, then Makefile defaults.
 
-CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`); install that version locally. `make test-mutation` is local only. Workflows under `.github/workflows/` cover build/lint/local and fresh-fork tests (`ci.yml`), coverage (`coverage.yml`), deep fuzz/invariants (`fuzz.yml`) and pending governance actions (`pending-action.yml`).
+CI pins Foundry via `.foundryref` (read by `.github/actions/repo-setup`); install that version locally. `make test-mutation` is local only. Workflows under `.github/workflows/` cover build/lint/local tests and the fork suites on every market (`ci.yml`), coverage (`coverage.yml`) and deep fuzz/invariants (`fuzz.yml`).
 Additional workflows check action configuration and compiled contract bytecode sizes.
 
 To run the local pre-commit solhint check, point Git at the bundled hook:

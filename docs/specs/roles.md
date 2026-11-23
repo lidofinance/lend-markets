@@ -34,11 +34,9 @@ No action listed below, other than proxy administration, can directly rewrite or
 
 ## Initial topology and verification
 
-The production deployer and market factory use temporary setup authority, grant the holders listed below, and revoke their temporary roles before returning. Calling the permissionless market factory does not give the caller any role. The factory validates the exact controller and guardian-registry sets, including roles that must start empty. The standalone Exit Book script checks its required holders, sole pauser, and empty resumer set; acceptance later checks every listed Exit Book role exactly.
+The deployment and the market factory use temporary setup authority, grant the holders listed below, and revoke their temporary roles before returning. Calling the permissionless market factory does not give the caller any role. The factory validates the exact controller and guardian-registry sets, including roles that must start empty.
 
-At deployment, the deployer, Lido DAO Agent, and EVMScriptExecutor must be distinct. An Exit Book pauser must also differ from all three, and so must a controller pauser committee when the deploy config names one. These checks do not constrain guardians, stewards, delegates, or later role assignments.
-
-Acceptance checks the exact holder set for every AccessControl role listed below, and rejects missing or extra holders. It also checks proxy admins, core ownership, and the router and Adaptive IRM owner-manager pairs.
+The deployer, the Lido DAO Agent and the EVMScriptExecutor are distinct accounts. An Exit Book pauser differs from all three, and so does a controller pauser committee. Guardians, stewards, delegates and later role assignments are not so constrained.
 
 ## Proxy administration
 

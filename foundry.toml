@@ -25,9 +25,6 @@ isolate = false
 fs_permissions = [
     { access = "read", path = "./out" },
     { access = "read", path = "./lib" },
-    { access = "read", path = "./script/config" },
-    { access = "read", path = "./test/acceptance" },
-    { access = "read-write", path = "./deployed" },
 ]
 
 [profile.default.invariant]

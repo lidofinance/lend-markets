@@ -4,10 +4,8 @@
 
 # Make normally lets an included file replace exported environment variables. Preserve the public inputs so
 # precedence is consistently: command line > exported environment > .env > defaults.
-DOTENV_OVERRIDE_VARS := SCRIPT DEPLOYER_SENDER DEPLOYER_ACCOUNT PREPARE_MARKETS CONFIG RUN MARKET MARKET_A MARKET_B PIN_BLOCK RPC_URL DEPLOYMENT_RUN \
-	FORK_BLOCK TEST_SEED FOUNDRY_FUZZ_SEED ACCEPTANCE_RPC_URL ACCEPTANCE_RUN ACCEPTANCE_PAUSER_COMMITTEE \
-	ACCEPTANCE_ENABLE_SETTLEMENT ACCEPTANCE_STEWARD ACCEPTANCE_FEE ACCEPTANCE_MIN_CORE_SEED_SHARES \
-	ACCEPTANCE_MIN_VAULT_SEED_SHARES
+DOTENV_OVERRIDE_VARS := SCRIPT DEPLOYER_SENDER DEPLOYER_ACCOUNT RUN MARKET RPC_URL HOODI_RPC_URL FORK_BLOCK \
+	HOODI_FORK_BLOCK TEST_SEED FOUNDRY_FUZZ_SEED
 
 define capture_exported_value
 _DOTENV_ORIGIN_$(1) := $$(origin $(1))
@@ -35,12 +33,11 @@ unexport capture_exported_value restore_exported_value
 FMT_PATHS := src/LidoLendERC4626.sol src/GuardianSignals.sol src/adapters src/controllers src/interfaces \
 	src/oracle src/libs src/periphery src/utils script test
 
-DEPLOYMENT_ANCHORS := script/Bundler3Anchor.sol script/CircuitBreakerAnchor.sol script/VaultV2Anchor.sol
+DEPLOYMENT_ANCHORS := script/Bundler3Anchor.sol script/CircuitBreakerAnchor.sol
 
 .PHONY: help build build-deps sizes deploy test test-local test-fork test-deployment test-simulation test-mutation \
 	fmt fmt-check lint coverage snapshot snapshot-diff slither solhint doc test-plan test-plan-check audit-checksums ci clean \
-	acceptance-run acceptance-run-multi \
-	apply-pending pending-stop test-pending
+	activation-safe-tx
 
 help: ## List commands and their inputs
 	@echo 'Build and checks:'
@@ -58,18 +55,16 @@ help: ## List commands and their inputs
 	@echo '                       verification and resume: direct forge options, see script/DEPLOYMENT.md'
 	@echo ''
 	@echo 'Tests:'
-	@echo '  test                 local + fresh mainnet-fork suites; RPC_URL required'
+	@echo '  test                 every suite on the default fork target (mainnet weth-wsteth); RPC_URL required'
 	@echo '  test-local           unit, scenario, invariant and 30-day simulations; no RPC'
-	@echo '  test-fork RPC_URL=<rpc>                         fresh mainnet fixture inside Forge'
-	@echo '  test-fork RUN=<run> RPC_URL=<rpc>               prepare missing/inert markets on a private fork'
-	@echo '  test-fork RUN=<run> PREPARE=false RPC_URL=<rpc>  check recorded state without preparation'
-	@echo '                       RUN/PREPARE are command-line selectors; optional FORK_BLOCK pins the fork'
+	@echo '  test-fork-<network>-<market>  one market'"'"'s fork suites; its RPC_URL or HOODI_RPC_URL'
+	@echo '  test-fork            every market; run as make -k test-fork to go on past a failing market'
+	@echo '  test-fork RUN=<run> RPC_URL=<rpc>               the run'"'"'s recorded markets at the latest block, created'
+	@echo '  test-fork RUN=<run> PREPARE=false RPC_URL=<rpc>  the recorded markets as they are; inert ones skip'
 	@echo '  test-deployment      Solidity deployment scenarios; RPC_URL, optional FORK_BLOCK'
 	@echo '  test-simulation      365-day solvency simulations'
 	@echo '  test-mutation        local mutation testing of src/; requires forge >= 1.8.0'
-	@echo '  acceptance-run       RUN=<run> MARKET=<market> RPC_URL=<rpc>'
-	@echo '  acceptance-run-multi RUN=<run> MARKET_A=<a> MARKET_B=<b> RPC_URL=<rpc>'
-	@echo '                       reviewed ACCEPTANCE_* inputs are listed in script/DEPLOYMENT.md'
+	@echo '  activation-safe-tx   MARKET=<network>/markets/<DeployScript>: the Safe transaction of its activation motion'
 	@echo '  ci                   build + lint + test-local'
 	@echo ''
 	@echo 'Reports and documentation:'
@@ -81,11 +76,6 @@ help: ## List commands and their inputs
 	@echo '  test-plan-check      check TEST_PLAN.md links and test references'
 	@echo '  audit-checksums      audited-source digests; optional REF=<git-ref>'
 	@echo '  slither / solhint    optional analyzers; require separate installation'
-	@echo ''
-	@echo 'Pending governance:'
-	@echo '  apply-pending        CONFIG=<config> RPC_URL=<rpc> [PIN_BLOCK=<block>]; apply on local Anvil'
-	@echo '  test-pending         CONFIG=<config> RUN=<run> RPC_URL=<rpc>; apply then test without preparation'
-	@echo '  pending-stop         stop the pending-action Anvil fork'
 
 ##@ Deployment
 deploy: ## One script: SCRIPT RPC_URL DEPLOYER_SENDER; BROADCAST=true DEPLOYER_ACCOUNT=<keystore> to send
@@ -115,32 +105,48 @@ sizes: ## Compile and report deployed-contract sizes
 build-deps:
 	forge build $(DEPLOYMENT_ANCHORS)
 
-test test-local test-fork test-deployment test-simulation test-mutation coverage snapshot snapshot-diff \
-acceptance-run acceptance-run-multi: build-deps
+test test-local test-fork test-deployment test-simulation test-mutation coverage snapshot snapshot-diff: build-deps
 
 test: ## Local + fresh-fork suites; RPC_URL required
-	DEPLOYMENT_RUN= PREPARE_MARKETS=false forge test
+	forge test
 
 test-local: ## Local suites; no RPC
 	forge test --no-match-path 'test/{fork,deployment}/**'
 
-# Only explicit Make arguments select an existing run or disable its preparation.
-test-fork: ## Fork suites: fresh by default; RUN=<run> prepares existing; PREPARE=false only tests
+# One market's fork suites, in its own forge run; a network without its RPC fails. With RUN=<network>
+# on the command line, the fork suites on the network's recorded market over RPC_URL at its latest block, created when
+# inert unless PREPARE=false.
+fork_test = FORK_DEPLOY_SCRIPT=script/deployment/$(1).s.sol forge test --match-path 'test/fork/**' -vv
 ifeq ($(origin RUN),command line)
-	@test -n "$(RUN)" || { echo 'ERROR: RUN must not be empty'; exit 1; }
-	@test -n "$(RPC_URL)" || { echo 'ERROR: RPC_URL is required'; exit 1; }
-ifeq ($(origin PREPARE),command line)
-	@case "$(PREPARE)" in true|false) ;; *) echo 'ERROR: PREPARE must be true or false'; exit 1 ;; esac
-	DEPLOYMENT_RUN="$(RUN)" PREPARE_MARKETS="$(PREPARE)" forge test --match-path 'test/fork/**'
-else
-	DEPLOYMENT_RUN="$(RUN)" PREPARE_MARKETS=true forge test --match-path 'test/fork/**'
+fork_test = FORK_DEPLOY_SCRIPT=script/deployment/$(1).s.sol FORK_RUN=$(RUN) FORK_RUN_PREPARE=$(or $(PREPARE),true) \
+	forge test --match-path 'test/fork/**' -vv
 endif
-else
-ifeq ($(origin PREPARE),command line)
-	@echo 'ERROR: PREPARE requires an explicit RUN=<run>'; exit 1
-endif
-	DEPLOYMENT_RUN= PREPARE_MARKETS=false forge test --match-path 'test/fork/**'
-endif
+unexport fork_test
+
+test-fork-mainnet-weth-wsteth: ; $(call fork_test,mainnet/markets/DeployWethWstethMainnet)
+test-fork-mainnet-usdc-usdy: ; $(call fork_test,mainnet/markets/DeployUsdcUsdyMainnet)
+test-fork-mainnet-usdc-dejtrsy: ; $(call fork_test,mainnet/markets/DeployUsdcDejtrsyMainnet)
+test-fork-mainnet-usdc-jtrsy: ; $(call fork_test,mainnet/markets/DeployUsdcJtrsyMainnet)
+test-fork-mainnet-usdc-dejaaa: ; $(call fork_test,mainnet/markets/DeployUsdcDejaaaMainnet)
+test-fork-mainnet-usdc-jaaa: ; $(call fork_test,mainnet/markets/DeployUsdcJaaaMainnet)
+test-fork-hoodi-weth-wsteth: ; $(call fork_test,hoodi/markets/DeployWethWstethHoodi)
+test-fork-hoodi-usdc-usdy: ; $(call fork_test,hoodi/markets/DeployUsdcUsdyHoodi)
+test-fork-hoodi-usdt-usdy: ; $(call fork_test,hoodi/markets/DeployUsdtUsdyHoodi)
+test-fork-hoodi-usdc-usdy-nav: ; $(call fork_test,hoodi/markets/DeployUsdcUsdyNavHoodi)
+test-fork-hoodi-usdc-jtrsy: ; $(call fork_test,hoodi/markets/DeployUsdcJtrsyHoodi)
+test-fork-hoodi-usdc-dejtrsy: ; $(call fork_test,hoodi/markets/DeployUsdcDejtrsyHoodi)
+test-fork-hoodi-usdc-jaaa: ; $(call fork_test,hoodi/markets/DeployUsdcJaaaHoodi)
+test-fork-hoodi-usdc-dejaaa: ; $(call fork_test,hoodi/markets/DeployUsdcDejaaaHoodi)
+
+FORK_TARGETS := test-fork-mainnet-weth-wsteth test-fork-mainnet-usdc-usdy test-fork-mainnet-usdc-dejtrsy \
+	test-fork-mainnet-usdc-jtrsy test-fork-mainnet-usdc-dejaaa test-fork-mainnet-usdc-jaaa \
+	test-fork-hoodi-weth-wsteth test-fork-hoodi-usdc-usdy test-fork-hoodi-usdt-usdy test-fork-hoodi-usdc-usdy-nav \
+	test-fork-hoodi-usdc-jtrsy test-fork-hoodi-usdc-dejtrsy test-fork-hoodi-usdc-jaaa test-fork-hoodi-usdc-dejaaa
+unexport FORK_TARGETS
+.PHONY: $(FORK_TARGETS)
+$(FORK_TARGETS): build-deps
+
+test-fork: $(FORK_TARGETS) ## Every market; run with make -k
 
 test-deployment: ## Solidity deployment scenarios on a Forge fork; RPC_URL, optional FORK_BLOCK
 	FOUNDRY_PROFILE=deployment forge test -vv
@@ -165,14 +171,14 @@ lint: ## Run Forge lint
 	forge lint
 
 coverage: ## Coverage including fresh-fork suites; RPC_URL required
-	DEPLOYMENT_RUN= PREPARE_MARKETS=false forge coverage --report summary
+	forge coverage --report summary
 
 # -vv exposes TEST_SEED and FORK_BLOCK for replay; pin FOUNDRY_FUZZ_SEED for invariant counters too.
 snapshot: ## Gas snapshot including fresh-fork suites; RPC_URL required
 snapshot-diff: ## Compare snapshot; use the same TEST_SEED
 snapshot-diff: SNAP_FLAGS := --diff
 snapshot snapshot-diff:
-	DEPLOYMENT_RUN= PREPARE_MARKETS=false forge snapshot $(SNAP_FLAGS) -vv
+	forge snapshot $(SNAP_FLAGS) -vv
 
 slither: ## Run Slither (separate install)
 	slither .
@@ -200,36 +206,9 @@ clean: ## Remove Forge build output
 
 RUN ?=
 RPC_URL ?=
-CONFIG ?= mainnet
-MARKET ?= weth-wsteth
-PIN_BLOCK ?=
-##@ Deployment verification
-acceptance-run: ## Verify one market: RUN MARKET RPC_URL
-	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
-	@test -n "$(MARKET)" || { echo "ERROR: set MARKET"; exit 1; }
-	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
-	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_RUN="$(RUN)" MARKET="$(MARKET)" forge test --match-path 'test/acceptance/*' --no-match-contract MultiMarketActivationSimulation -vvv
 
-acceptance-run-multi: ## Verify two markets: RUN MARKET_A MARKET_B RPC_URL
-	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
-	@test -n "$(MARKET_A)" || { echo "ERROR: set MARKET_A"; exit 1; }
-	@test -n "$(MARKET_B)" || { echo "ERROR: set MARKET_B"; exit 1; }
-	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL in .env"; exit 1; }
-	ACCEPTANCE_RPC_URL="$(RPC_URL)" ACCEPTANCE_RUN="$(RUN)" MARKET="$(MARKET_A)" MARKET_A="$(MARKET_A)" MARKET_B="$(MARKET_B)" forge test --match-contract MultiMarketActivationSimulation -vvv
-
-##@ Pending governance action
-# Pending multisig action: fork the live network, apply the transaction(s) from
-# script/config/<CONFIG>/pending.toml, and leave the fork on :8545 for test-fork / state-mate.
-apply-pending: ## Apply pending action on a local fork: CONFIG RPC_URL
-	@test -n "$(RPC_URL)" || { echo "ERROR: set RPC_URL to the live network's RPC"; exit 1; }
-	bash script/pending-action.sh apply "$(CONFIG)" "$(PIN_BLOCK)"
-
-pending-stop: ## Stop the pending-action fork
-	bash script/pending-action.sh stop
-
-# Full pre-signing validation: apply the pending action, then run the fork suites against the
-# resulting state. RUN selects script/deployment/<run>/artifacts/Deployment.sol.
-test-pending: ## Apply pending action and run fork suites: CONFIG RUN RPC_URL
-	@test -n "$(RUN)" || { echo "ERROR: set RUN"; exit 1; }
-	$(MAKE) apply-pending CONFIG="$(CONFIG)" RPC_URL="$(RPC_URL)" PIN_BLOCK="$(PIN_BLOCK)"
-	$(MAKE) test-fork RPC_URL=http://127.0.0.1:8545 RUN="$(RUN)" PREPARE=false FORK_BLOCK=
+##@ Activation
+# Not echoed: the command line holds the RPC URL.
+activation-safe-tx: ## Print the Safe transaction of a market's activation motion: MARKET=<network>/markets/<DeployScript>
+	@forge script script/deployment/$(MARKET).s.sol --sig "printActivationSafeTransaction()" \
+		--rpc-url "$(if $(filter hoodi/%,$(MARKET)),$(HOODI_RPC_URL),$(RPC_URL))"

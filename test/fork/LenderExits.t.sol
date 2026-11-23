@@ -7,25 +7,23 @@ import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {Erc4626Math} from "../setup/Erc4626Math.sol";
 import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
-import {ForkMarketStack} from "./helpers/ForkMarketStack.sol";
+import {ForkStack} from "./helpers/ForkStack.sol";
 
 /// @notice The lender exits the deployed market offers, each held to an independent recompute: the ERC-4626 entry
 ///         points and the direct core position against the share maths, a targeted settle through the borrower's
 ///         personal settlement LTV, and `fallbackExit` inside free liquidity, which must never read the oracle.
-abstract contract LenderExitsForkBase is ForkMarketStack {
+contract LenderExitsForkTest is ForkStack {
     using MarketActions for Market;
 
     address internal DIRECT_LENDER;
     address internal RECEIVER;
 
-    constructor(string memory role) ForkMarketStack(role) {}
-
     function setUp() public {
-        _fork();
-        _bindRole();
+        _onlyOnOneMarketPerKind();
+        _setUpTarget();
         _seedLenderAndBorrower();
-        DIRECT_LENDER = _freshActor(deployed, "lenderExits.directLender");
-        RECEIVER = _freshActor(deployed, "lenderExits.receiver");
+        DIRECT_LENDER = _freshActor(market, "lenderExits.directLender");
+        RECEIVER = _freshActor(market, "lenderExits.receiver");
     }
 
     // ---
@@ -34,31 +32,31 @@ abstract contract LenderExitsForkBase is ForkMarketStack {
 
     function test_vaultMint_pullsAssetsByErc4626Formula() public {
         uint256 shares = lenderShares / 7 + 1;
-        deal(address(deployed.loanToken), LENDER, Erc4626Math.toAssets(deployed.vault, shares, Math.Rounding.Ceil));
+        deal(address(market.loanToken), LENDER, Erc4626Math.toAssets(market.vault, shares, Math.Rounding.Ceil));
         market.vaultMint(LENDER, shares);
     }
 
     function test_vaultWithdraw_burnsSharesByErc4626Formula() public {
-        uint256 assets = Erc4626Math.toAssets(deployed.vault, lenderShares / 3, Math.Rounding.Floor);
-        assertLe(assets, deployed.vault.maxWithdraw(LENDER), "setup: the withdrawal must fit free liquidity");
+        uint256 assets = Erc4626Math.toAssets(market.vault, lenderShares / 3, Math.Rounding.Floor);
+        assertLe(assets, market.vault.maxWithdraw(LENDER), "setup: the withdrawal must fit free liquidity");
         market.vaultWithdraw(LENDER, assets);
     }
 
     function test_vaultRedeem_paysAssetsByErc4626Formula() public {
         uint256 shares = lenderShares / 5;
-        assertLe(shares, deployed.vault.maxRedeem(LENDER), "setup: the redemption must fit free liquidity");
+        assertLe(shares, market.vault.maxRedeem(LENDER), "setup: the redemption must fit free liquidity");
         market.vaultRedeem(LENDER, shares);
     }
 
     /// @dev Interest is left pending over the fixture's borrow, so the share rate is off 1e6 and unaccrued.
     function test_coreSupplyThenWithdraw_bySharesMath() public {
         vm.warp(block.timestamp + 1 days);
-        uint256 assets = 2 * _loanUnit(deployed) + 321;
-        _requireSupplyHeadroom(deployed, assets);
-        deal(address(deployed.loanToken), DIRECT_LENDER, assets);
+        uint256 assets = 2 * _oneLoanToken() + 321;
+        _requireSupplyHeadroom(market, assets);
+        deal(address(market.loanToken), DIRECT_LENDER, assets);
         uint256 shares = market.coreSupply(DIRECT_LENDER, assets);
         market.coreWithdraw(DIRECT_LENDER, shares);
-        assertEq(deployed.core.position(deployed.id, DIRECT_LENDER).supplyShares, 0, "round trip leaves no position");
+        assertEq(market.core.position(market.id, DIRECT_LENDER).supplyShares, 0, "round trip leaves no position");
     }
 
     // ---
@@ -81,7 +79,7 @@ abstract contract LenderExitsForkBase is ForkMarketStack {
         uint256 shares = lenderShares / 2;
         vm.prank(LENDER);
         vm.expectRevert(ILidoLendERC4626.NothingSettled.selector);
-        deployed.vault.settle(shares, borrowers, LENDER, LENDER);
+        market.vault.settle(shares, borrowers, LENDER, LENDER);
     }
 
     // ---
@@ -91,11 +89,7 @@ abstract contract LenderExitsForkBase is ForkMarketStack {
     /// @dev With the oracle down the settle leg cannot even be quoted, so a request that free liquidity covers
     ///      succeeding proves only the redeem leg ran.
     function test_fallbackExit_withinLiquidity_liquidLegOnly_oracleNotRead() public {
-        _mockOracleRevert(deployed);
+        collateralIssuer.revertOracleSource("");
         market.fallbackExitLiquid(LENDER, lenderShares / 4, RECEIVER);
     }
 }
-
-contract LenderExitsWethWstethForkTest is LenderExitsForkBase("weth-wsteth") {}
-
-contract LenderExitsUsdyUsdtForkTest is LenderExitsForkBase("usdy-usdt") {}

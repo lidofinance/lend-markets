@@ -8,40 +8,36 @@ import {IRiskStewardDashboard} from "../../src/interfaces/IRiskStewardDashboard.
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
 import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
-import {ForkMarketStack} from "./helpers/ForkMarketStack.sol";
+import {ForkStack} from "./helpers/ForkStack.sol";
+import {MarketDeploymentResult, MarketDeployConfig} from "../../script/deployment/DeployMarketBase.s.sol";
 
 /// @notice One core hosts both deployed markets; their per-market state must stay apart. A full flow on one leaves
 ///         the other's stored market, settlement queue and the borrower's position untouched, and a pause, freeze,
 ///         ban or cap lands on the named market only — a ban is keyed by market, so this holds whether the markets
 ///         share a guardian registry or not. The red case is a provisioning change that shares a controller between
 ///         markets.
-contract MultiMarketIsolationForkTest is ForkMarketStack("weth-wsteth") {
+contract MultiMarketIsolationForkTest is ForkStack {
     using MarketActions for Market;
 
-    /// @dev The second bound market; `deployed` / `market` (from the base) are the first.
-    BoundMarket internal other;
-    Market internal otherMarket;
+    /// @dev The second market: the target's market script at a lower LLTV over the same oracle and guardian
+    ///      registry; `market` (from the base) is the first.
+    Market internal other;
 
     function setUp() public {
-        _fork();
-        _bindRole();
-        string memory second;
-        for (uint256 i; i < forkDeployment.markets.length; ++i) {
-            if (keccak256(bytes(forkDeployment.markets[i].parameters.name)) != keccak256(bytes(deployed.name))) {
-                second = forkDeployment.markets[i].parameters.name;
-                break;
-            }
-        }
-        if (bytes(second).length == 0) vm.skip(true, "MultiMarket: run has only one market");
-        other = _bindMarket(second);
-        _pokeAccrue(other);
-        _copyMarket(otherMarket, other);
+        _onlyOnWethWsteth();
+        _setUpTarget();
+        MarketDeployConfig memory p = parameters;
+        p.market.lltv -= 0.01e18;
+        p.wrapper.symbol = string.concat(p.wrapper.symbol, "2");
+        MarketDeploymentResult memory second = script.deploy(protocol, p);
+        _createMarket(second);
+        other = _marketHandle(second);
 
-        require(address(deployed.controller) != address(other.controller), "MultiMarket: markets share a controller");
-        require(address(deployed.core) == address(other.core), "MultiMarket: markets do not share the core");
+        require(address(market.controller) != address(other.controller), "MultiMarket: markets share a controller");
+        require(address(market.core) == address(other.core), "MultiMarket: markets do not share the core");
 
-        LENDER = _freshActor(deployed, "multi.lender");
-        BORROWER = _freshActor(deployed, "multi.borrower");
+        LENDER = _freshActor(market, "multi.lender");
+        BORROWER = _freshActor(market, "multi.borrower");
     }
 
     // ---
@@ -49,16 +45,16 @@ contract MultiMarketIsolationForkTest is ForkMarketStack("weth-wsteth") {
     // ---
 
     function test_flowOnSecondMarket_leavesFirstUntouched() public {
-        _supplyCollateralAsBystander(market, deployed);
-        bytes32 before = _fingerprint(deployed);
-        _roundTrip(otherMarket, other);
-        assertEq(_fingerprint(deployed), before, "first market's stored state unchanged");
+        _supplyCollateralAsBystander(market);
+        bytes32 before = _fingerprint(market);
+        _roundTrip(other);
+        assertEq(_fingerprint(market), before, "first market's stored state unchanged");
     }
 
     function test_flowOnFirstMarket_leavesSecondUntouched() public {
-        _supplyCollateralAsBystander(otherMarket, other);
+        _supplyCollateralAsBystander(other);
         bytes32 before = _fingerprint(other);
-        _roundTrip(market, deployed);
+        _roundTrip(market);
         assertEq(_fingerprint(other), before, "second market's stored state unchanged");
     }
 
@@ -67,13 +63,13 @@ contract MultiMarketIsolationForkTest is ForkMarketStack("weth-wsteth") {
     // ---
 
     function test_resealPauseOnOne_leavesOtherLive() public {
-        _pauseViaResealManager(deployed, 1 days);
+        _pauseViaResealManager(1 days);
         assertFalse(IPausableUntil(address(other.controller)).isPaused(), "other market still live");
     }
 
     function test_stewardFreezeOnOne_leavesOtherUnfrozen_andStewardCannotFreezeIt() public {
-        address steward = _appointSteward(deployed, "multi.steward");
-        _freezeViaSteward(deployed, steward);
+        address steward = _appointSteward("multi.steward");
+        _freezeViaSteward(steward);
         assertFalse(other.controller.isFrozen(), "other market not frozen");
 
         vm.prank(steward);
@@ -82,14 +78,14 @@ contract MultiMarketIsolationForkTest is ForkMarketStack("weth-wsteth") {
     }
 
     function test_banOnOneMarket_invisibleOnOther() public {
-        market.banVia(_quorumGuardians(deployed), BORROWER);
+        market.banVia(_quorumGuardians(), BORROWER);
         assertFalse(other.guardianSignals.isBanned(other.id, BORROWER), "ban is per market");
         assertFalse(other.controller.positionOf(BORROWER).banned, "other controller does not see it");
     }
 
     function test_facadeCap_targetsOnlyTheNamedMarket() public {
         uint256 otherCapBefore = LidoLendMarketController(address(other.controller)).supplyCap();
-        _setSupplyCap(deployed, deployed.core.market(deployed.id).totalSupplyAssets + _loanUnit(deployed));
+        _setSupplyCap(market.core.market(market.id).totalSupplyAssets + _oneLoanToken());
         assertEq(LidoLendMarketController(address(other.controller)).supplyCap(), otherCapBefore, "other cap unchanged");
     }
 
@@ -98,19 +94,19 @@ contract MultiMarketIsolationForkTest is ForkMarketStack("weth-wsteth") {
     // ---
 
     /// @dev Deposit, post a lot, mature it, borrow, repay, reclaim, redeem: every hooked action once.
-    function _roundTrip(Market storage target, BoundMarket memory bound) internal {
-        uint256 lotSize = 2 * uint256(bound.activation.minActivationAmount);
-        uint256 borrowAssets = _maxBorrow(bound, lotSize, bound.oracle.price()) / 2;
+    function _roundTrip(Market storage target) internal {
+        uint256 lotSize = 2 * uint256(_activationConfig(target).minActivationAmount);
+        uint256 borrowAssets = _maxBorrow(target, lotSize, target.oracle.price()) / 2;
         uint256 deposit = borrowAssets * 2;
-        _requireSupplyHeadroom(bound, deposit);
+        _requireSupplyHeadroom(target, deposit);
 
-        deal(address(bound.loanToken), LENDER, deposit);
+        deal(address(target.loanToken), LENDER, deposit);
         uint256 shares = target.vaultDeposit(LENDER, deposit);
-        deal(address(bound.collateralToken), BORROWER, lotSize);
+        collateralIssuer.dealCollateral(BORROWER, lotSize);
         target.supplyCollateral(BORROWER, lotSize);
         target.activateCollateral();
         uint256 debt = target.borrow(BORROWER, borrowAssets);
-        deal(address(bound.loanToken), BORROWER, target.repayAssets(debt));
+        deal(address(target.loanToken), BORROWER, target.repayAssets(debt));
         target.repay(BORROWER, debt);
         target.withdrawCollateral(BORROWER, lotSize, BORROWER);
         target.vaultRedeem(LENDER, shares);
@@ -118,20 +114,20 @@ contract MultiMarketIsolationForkTest is ForkMarketStack("weth-wsteth") {
 
     /// @dev Recent collateral supply by someone else, as on a live market: the untouched market starts the flow with
     ///      a non-zero, decaying inflow.
-    function _supplyCollateralAsBystander(Market storage target, BoundMarket memory bound) internal {
-        address bystander = _freshActor(bound, "multi.bystander");
-        uint256 lotSize = 2 * uint256(bound.activation.minActivationAmount);
-        deal(address(bound.collateralToken), bystander, lotSize);
+    function _supplyCollateralAsBystander(Market storage target) internal {
+        address bystander = _freshActor(target, "multi.bystander");
+        uint256 lotSize = 2 * uint256(_activationConfig(target).minActivationAmount);
+        collateralIssuer.dealCollateral(bystander, lotSize);
         target.supplyCollateral(bystander, lotSize);
     }
 
     /// @dev The stored market struct, the controller's queue size and the flow's borrower as this market sees it:
     ///      anything a flow on the OTHER market could conceivably touch by mistake. Inflow is left out because it
     ///      decays with the flow's warp; a misrouted collateral hook still shows up in the borrower's position.
-    function _fingerprint(BoundMarket memory bound) internal view returns (bytes32) {
-        MorphoMarket memory stored = bound.core.market(bound.id);
+    function _fingerprint(Market storage target) internal view returns (bytes32) {
+        MorphoMarket memory stored = target.core.market(target.id);
         return keccak256(
-            abi.encode(stored, bound.controller.settlementBorrowersCount(), bound.controller.positionOf(BORROWER))
+            abi.encode(stored, target.controller.settlementBorrowersCount(), target.controller.positionOf(BORROWER))
         );
     }
 }

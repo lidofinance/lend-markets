@@ -5,30 +5,28 @@ import {ILidoLendMarketController} from "../../src/interfaces/ILidoLendMarketCon
 import {CollateralActivationLib} from "../../src/libs/CollateralActivationLib.sol";
 import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
-import {ForkMarketStack} from "./helpers/ForkMarketStack.sol";
+import {ForkStack} from "./helpers/ForkStack.sol";
 
 /// @notice The collateral lifecycle a borrower meets on the deployed market at its live thresholds: inactive
 ///         collateral is all-or-nothing on withdrawal, a top-up restarts or joins the timer, and borrowing is
 ///         gated on matured collateral up to `collateralValue * LLTV`. Sizes derive from the live config, price
 ///         and LLTV.
-abstract contract BorrowerActivationForkBase is ForkMarketStack {
+contract BorrowerActivationForkTest is ForkStack {
     using MarketActions for Market;
 
-    constructor(string memory role) ForkMarketStack(role) {}
-
     function setUp() public {
-        _fork();
-        _bindRole();
-        LENDER = _freshActor(deployed, "activation.lender");
-        BORROWER = _freshActor(deployed, "activation.borrower");
+        _onlyOnOneMarketPerKind();
+        _setUpTarget();
+        LENDER = _freshActor(market, "activation.lender");
+        BORROWER = _freshActor(market, "activation.borrower");
 
         // Liquidity for the capacity test, sized to what the lot can carry.
-        uint256 deposit = _maxBorrow(deployed, lot, deployed.oracle.price()) + _loanUnit(deployed);
-        _requireSupplyHeadroom(deployed, deposit);
-        deal(address(deployed.loanToken), LENDER, deposit);
+        uint256 deposit = _maxBorrow(market, lot, market.oracle.price()) + _oneLoanToken();
+        _requireSupplyHeadroom(market, deposit);
+        deal(address(market.loanToken), LENDER, deposit);
         market.vaultDeposit(LENDER, deposit);
 
-        deal(address(deployed.collateralToken), BORROWER, 3 * lot);
+        collateralIssuer.dealCollateral(BORROWER, 3 * lot);
     }
 
     // ---
@@ -41,16 +39,16 @@ abstract contract BorrowerActivationForkBase is ForkMarketStack {
         vm.expectRevert(
             abi.encodeWithSelector(CollateralActivationLib.InactiveCollateralNotCleared.selector, lot / 3, lot)
         );
-        deployed.core.withdrawCollateral(deployed.params, lot / 3, BORROWER, BORROWER);
+        market.core.withdrawCollateral(market.params, lot / 3, BORROWER, BORROWER);
     }
 
     function test_withdrawCollateral_wholeInactiveLot_clearsBucketsAndTimer() public {
         market.supplyCollateral(BORROWER, lot);
         market.withdrawCollateral(BORROWER, lot, BORROWER);
-        ILidoLendMarketController.BorrowerPosition memory position = deployed.controller.positionOf(BORROWER);
+        ILidoLendMarketController.BorrowerPosition memory position = market.controller.positionOf(BORROWER);
         assertEq(position.activating, 0, "lot cleared");
         assertEq(position.unlockTime, 0, "timer cleared");
-        assertEq(deployed.core.position(deployed.id, BORROWER).collateral, 0, "position empty");
+        assertEq(market.core.position(market.id, BORROWER).collateral, 0, "position empty");
     }
 
     // ---
@@ -63,12 +61,12 @@ abstract contract BorrowerActivationForkBase is ForkMarketStack {
     ///      (decayed) and the write (undecayed) reading different inflows.
     function test_topUp_beforeMaturity_movesDeadlineToTheNewQuote() public {
         market.supplyCollateral(BORROWER, lot);
-        uint256 firstUnlock = deployed.controller.positionOf(BORROWER).unlockTime;
+        uint256 firstUnlock = market.controller.positionOf(BORROWER).unlockTime;
 
-        uint256 quotedDelay = deployed.controller.currentActivationDelay(lot);
+        uint256 quotedDelay = market.controller.currentActivationDelay(lot);
         market.supplyCollateral(BORROWER, lot);
 
-        ILidoLendMarketController.BorrowerPosition memory position = deployed.controller.positionOf(BORROWER);
+        ILidoLendMarketController.BorrowerPosition memory position = market.controller.positionOf(BORROWER);
         assertEq(position.activating, 2 * lot, "both lots share the timer");
         assertEq(position.unlockTime, block.timestamp + quotedDelay, "deadline restarted at the quoted delay");
         assertGt(position.unlockTime, firstUnlock, "and it moved later");
@@ -80,11 +78,11 @@ abstract contract BorrowerActivationForkBase is ForkMarketStack {
         market.supplyCollateral(BORROWER, lot);
         market.activateCollateral();
 
-        _approve(address(deployed.collateralToken), BORROWER, address(deployed.core), lot);
+        _approve(address(market.collateralToken), BORROWER, address(market.core), lot);
         vm.prank(BORROWER);
-        deployed.core.supplyCollateral(deployed.params, lot, BORROWER, "");
+        market.core.supplyCollateral(market.params, lot, BORROWER, "");
 
-        ILidoLendMarketController.BorrowerPosition memory position = deployed.controller.positionOf(BORROWER);
+        ILidoLendMarketController.BorrowerPosition memory position = market.controller.positionOf(BORROWER);
         assertEq(position.active, lot, "the first lot matured on the touch");
         assertEq(position.activating, lot, "the second lot starts its own timer");
     }
@@ -97,7 +95,7 @@ abstract contract BorrowerActivationForkBase is ForkMarketStack {
         market.supplyCollateral(BORROWER, lot);
         vm.prank(BORROWER);
         vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
-        deployed.core.borrow(deployed.params, 1, 0, BORROWER, BORROWER);
+        market.core.borrow(market.params, 1, 0, BORROWER, BORROWER);
     }
 
     /// @dev Capacity is `collateralValue * LLTV`, both floored, at the live price. One unit over it is refused;
@@ -106,19 +104,15 @@ abstract contract BorrowerActivationForkBase is ForkMarketStack {
     function test_borrow_oneUnitOverCapacityReverts_oneUnitUnderPasses() public {
         market.supplyCollateral(BORROWER, lot);
         market.activateCollateral();
-        _pokeAccrue(deployed);
+        _accrueInterest();
 
-        uint256 capacity = _maxBorrow(deployed, lot, deployed.oracle.price());
-        require(capacity < _freeLiquidity(deployed), "BorrowerActivation: fixture liquidity must cover the capacity");
+        uint256 capacity = _maxBorrow(market, lot, market.oracle.price());
+        require(capacity < _freeLiquidity(), "BorrowerActivation: fixture liquidity must cover the capacity");
 
         vm.prank(BORROWER);
         vm.expectRevert(ILidoLendMarketController.InsufficientActiveCollateral.selector);
-        deployed.core.borrow(deployed.params, capacity + 1, 0, BORROWER, BORROWER);
+        market.core.borrow(market.params, capacity + 1, 0, BORROWER, BORROWER);
 
         market.borrow(BORROWER, capacity - 1);
     }
 }
-
-contract BorrowerActivationWethWstethForkTest is BorrowerActivationForkBase("weth-wsteth") {}
-
-contract BorrowerActivationUsdyUsdtForkTest is BorrowerActivationForkBase("usdy-usdt") {}

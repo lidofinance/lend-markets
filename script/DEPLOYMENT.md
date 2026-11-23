@@ -6,49 +6,48 @@ Easy Track motion. This repository does not deploy Easy Track or its executor.
 
 ## Scripts and shared operations
 
-- `ProtocolDeployment` / `ProtocolDeployer`: protocol backbone and a new or reused CircuitBreaker.
-- `MarketDeployment`: market creation, price-feed proxy deployment/validation and address output.
-- `WethWstethMarket` at the start of `mainnet/DeployWethWsteth.s.sol`: shared WETH/wstETH parameters and price-feed functions.
-- `TrailingAnchorMarket`: the recipe for a market over a trailing anchor oracle (`UsdyNavOracle` or `CentrifugeNavOracle`). `TrailingAnchorPriceFeed` holds its oracle checks, which acceptance also runs.
-- `ProtocolDeployer._deployExitBooks`: independent exit-book deployment.
-- `PeripheryDeployment`: bundler and Vault V2 helpers.
+- `DeployCoreBase`: the base of each network's core script (`mainnet/DeployCoreMainnet.s.sol`,
+  `hoodi/DeployCoreHoodi.s.sol`): the protocol backbone and a new or reused CircuitBreaker, through
+  `ProtocolDeployer` (`script/lib/`), which the exit-book scripts also use.
+- `DeployExitBooksBase`: the base of each network's exit-book script, over the network's recorded protocol.
+- `DeployMarketBase`: the base of each market script under `<network>/markets/`: market creation, and the protocol
+  and price-feed checks.
+- `DeployTrailingAnchorMarketBase`: the base of a market script over a trailing anchor oracle, which deploys the
+  oracle and hands it to the Agent.
+- `script/lib/`: `ProtocolDeployer` (protocol and exit-book deployment) and `RecordedProtocol` (the records of the chain
+  in use: its protocol, read from its core script, and its Easy Track activation factory, from its
+  `EasyTrack<Network>.sol`).
 
-The concrete `.s.sol` files inherit `Script` and the shared operations they use. Only these entrypoints contain
-`run()` and `startBroadcast`/`stopBroadcast`. Fork fixtures inherit the shared recipe class; only the runnable class inherits `Script` and exposes `run()`.
-`mainnet/artifacts/Protocol.sol` supplies recorded protocol addresses. New protocol parameters are defined
-at the start of `mainnet/DeployProtocol.s.sol`.
-`mainnet/DeployExitBooks.s.sol` defines the exit-book parameters directly; shared types live in `DeploymentTypes.sol`.
+A script is named `Deploy<Component><Network>` and its base `Deploy<Component>Base`. The concrete `.s.sol` files inherit `Script` and the shared operations they use. Only these entrypoints contain
+`run()` and `startBroadcast`/`stopBroadcast`. Fork tests call the scripts' `getOrDeploy()` without a broadcast.
+Each script overrides `getConfig()`, its deploy inputs, and `getDeployment()`, its recorded addresses; `run()` refuses a
+component that `getDeployment()` records. Each type lives in the script or library that owns it.
 
 These operations are also used by fork fixtures. Production contracts under `src/` and pinned dependencies are
 unchanged. The old TOML-driven deployment entrypoints and `deploy-all` shell driver have been removed.
 
-`mainnet/DeployWethWsteth.s.sol` uses the WETH/wstETH launch parameters and the Risk Steward as its sole guardian.
+`mainnet/markets/DeployWethWstethMainnet.s.sol` uses the WETH/wstETH launch parameters and the Risk Steward as its sole guardian.
 The three APR-dependent rates still need the approved launch snapshot. Guardian membership, quorum, tokens, price feed,
 activation/settlement parameters and IRM curve are Solidity values; no config file is read to construct them.
 
-A new market needs a reusable recipe inheriting `MarketDeployment`, with typed parameters and implementations of
-`_deployPriceFeedImplementation` and `_checkPriceFeed`, and a small runnable class in the same `.s.sol` file that supplies protocol addresses and
-calls `_deployMarket` inside its broadcast boundary. Tests use the reusable recipe directly.
-`parameters.name` identifies the market and its integration-test role. Set `parameters.market.oracle` or
+A new market is one script under `script/deployment/<network>/markets/` that inherits `DeployMarketBase` and overrides
+`getDeployConfig()` (its parameters), `getActivationMotionConfig()` (its activation choices),
+`getOrDeployPriceOracle()` and, once the market is deployed, `getDeployment()` (its addresses and block).
+`test/fork/helpers/ForkNetworks.sol` imports it, and the Makefile runs its fork suites as
+`test-fork-<network>-<market>`. Tests call the script's `getOrDeploy` and `deploy` without a broadcast.
+Set `parameters.market.oracle` or
 `parameters.market.guardianSignals` to reuse a reviewed deployment; zero creates that resource. Reused contracts are
-validated before market deployment. Set `ProtocolParameters.circuitBreaker` to reuse a CircuitBreaker.
+validated before market deployment. Record a CircuitBreaker in the core script's `getDeployment()`, without a core, to
+reuse it.
 
-A market over a trailing anchor oracle inherits `TrailingAnchorMarket` and calls
-`_deployTrailingAnchorMarket(p, parameters, msg.sender)` inside its broadcast. The recipe's constructor takes a
-`TrailingAnchorPriceFeedSpec`: the adapter kind and source, the market tokens, the launch parameters and the seed range.
-A field that a spec leaves out reads as zero, so the constructor refuses a zero in any of the eight parameters and in the
-seed range. It does not check the width of the seed range: the reviewer checks that `seedMinPrice` and `seedMaxPrice`
-are a narrow range around the live source price, since the seed price becomes the anchor and the base price.
-With `parameters.market.oracle` zero, the recipe deploys the oracle and initializes it in the proxy's constructor; a
-source price outside the seed range stops the run. The recipe then grants `DEFAULT_ADMIN_ROLE`, `MANAGER_ROLE` and
-`PRICE_ACCEPTOR_ROLE` to the Agent, and the deployer renounces its admin role, so the deployer must not be the Agent.
-A new or reused oracle must be the spec's adapter behind an Agent-administered proxy, with the spec's parameters, the
-Agent as the only holder of each role, the sizing rule kept at the market's LLTV, the anchor between the floor and the
-ceiling, and a price that `price()` returns. To reuse an oracle after `setParameters`, put the reviewed live parameters
-in the spec. After a later role change, the recipe refuses each new market on that oracle, since the spec has no input
-for other role holders. The market's record keeps the spec in `priceFeed.trailingAnchor`, with `priceFeedKind` `usdy-nav` or
-`centrifuge-nav`. The fork helpers do not know these kinds yet: preparing a run that records such a market fails, and
-a fork suite cannot bind it.
+A market over a trailing anchor oracle, such as `DeployUsdcUsdyMainnet`, deploys its adapter with
+`_deployTrailingAnchorOracle` behind a proxy, initialized in the proxy's constructor with the deployer as its first
+admin, the launch parameters and a seed range; a source price outside the seed range stops the run. The reviewer
+checks that the seed range is narrow around the live source price, since the seed price becomes the anchor and the
+base price. The deployer then grants `DEFAULT_ADMIN_ROLE`, `MANAGER_ROLE` and `PRICE_ACCEPTOR_ROLE` to the Agent and
+renounces its admin role.
+A reused oracle must be an Agent-administered proxy over an implementation with the code of a new build from the
+script.
 
 ## Simulate and broadcast
 
@@ -56,9 +55,9 @@ a fork suite cannot bind it.
 on the Make command line; environment and `.env` values cannot enable broadcasting.
 
 ```sh
-make deploy SCRIPT=script/deployment/mainnet/DeployWethWsteth.s.sol \
+make deploy SCRIPT=script/deployment/mainnet/markets/DeployWethWstethMainnet.s.sol \
   RPC_URL=<rpc> DEPLOYER_SENDER=<deployer>
-make deploy SCRIPT=script/deployment/mainnet/DeployWethWsteth.s.sol \
+make deploy SCRIPT=script/deployment/mainnet/markets/DeployWethWstethMainnet.s.sol \
   RPC_URL=<rpc> DEPLOYER_SENDER=<deployer> BROADCAST=true DEPLOYER_ACCOUNT=<keystore>
 ```
 
@@ -69,9 +68,9 @@ for dependencies with a different Solidity version.
 
 ```sh
 forge build
-forge script script/deployment/mainnet/DeployProtocol.s.sol --rpc-url <rpc> --sender <deployer> -vv
-forge script script/deployment/mainnet/DeployWethWsteth.s.sol --rpc-url <rpc> --sender <deployer> -vv
-forge script script/deployment/mainnet/DeployExitBooks.s.sol --rpc-url <rpc> --sender <deployer> -vv
+forge script script/deployment/mainnet/DeployCoreMainnet.s.sol --rpc-url <rpc> --sender <deployer> -vv
+forge script script/deployment/mainnet/markets/DeployWethWstethMainnet.s.sol --rpc-url <rpc> --sender <deployer> -vv
+forge script script/deployment/mainnet/DeployExitBooksMainnet.s.sol --rpc-url <rpc> --sender <deployer> -vv
 ```
 
 Without `--broadcast`, Forge simulates. Each script returns its typed deployment result and Forge keeps its
@@ -91,116 +90,81 @@ instead of `--account`.
 
 ## Results and dependency addresses
 
-Maintain dependency addresses in `script/deployment/<network>/artifacts/Protocol.sol` by hand after checking the
-successful Forge receipts and deployed code. `ExitBooks.sol` and `Bundler.sol` in the same folder hold their
-recorded addresses. New deployment inputs stay in the scripts; recorded expectations stay in `artifacts/`.
+Maintain each component's recorded addresses in its script's `getDeployment()` by hand after checking the successful
+Forge receipts and deployed code. Deployment inputs stay in the scripts' `getConfig()` and `getDeployConfig()`.
 
-`script/deployment/<run>/artifacts/Deployment.sol` provides `snapshot()`, returning a `DeploymentSnapshot`:
-protocol addresses, expected parameters, optional books/bundler/vaults and the recorded markets. Mainnet and
-Hoodi descriptions are checked in. Add a market's actual addresses and deployment block after deployment;
-keep its approved parameters in its Solidity recipe. Each market carries its price-feed sources and optional
-collateral blocklist; token addresses belong to its market parameters. Do not infer expected values from the contracts being tested.
+The fork suites take each script's record through its `getOrDeploy()`, which returns the record, failing where its
+contracts have no code at the fork's block, and deploys what is not recorded without a broadcast. Add a market's
+actual addresses and deployment block to its script's `getDeployment()` after deployment. `activationParams()` is the
+activation motion's calldata, and `activationScript()` the EVMScript of the motion's calls without the preseed; their
+approved choices stay in the script's `getActivationMotionConfig()`.
 
-With `--broadcast`, the four entrypoints write flat address lists under `deployed/<network>/`:
-`protocol.toml`, `markets/<market>.toml`, `exit-books.toml` or `bundler.toml`. Market output also includes its ID.
-Existing files are not overwritten; dry runs and tests do not write these lists. For another run, set the output
-directory explicitly in its concrete recipe.
+A run's addresses are its `run()` result, which Forge prints and keeps with the transactions and receipts in
+`broadcast/<script>/<chainId>/run-latest.json`. Check those receipts and the deployed code before copying the
+addresses into a script's `getDeployment()`, and keep the file as the package's `*.broadcast.json` under
+`deployed/<network>/`.
 
-Forge executes `run()` before sending transactions. The address list is therefore written before broadcast
-confirmation and can exist even if submission fails. Check the native Forge receipts and deployed code before
-copying addresses into the Solidity description. Existing TOML files remain unchanged; deployment and test inputs
-are Solidity only. Output uses standard `serializeAddress` / `writeToml`, without schemas or config hashes.
+An external CI run names a network, `mainnet` or `hoodi`, and runs `make test-fork RUN=<network>` against its RPC.
+Unknown networks, the wrong chain and missing core code fail.
 
-For an external CI run, supply the same `Deployment.sol` under `script/deployment/<run>/artifacts/`, with the actual
-addresses and expected parameters of the caller's prepared state. Then run `make test-fork RUN=<run>` against
-its RPC. Register the run in `RecordedDeployment.load` with an import and a call to its `snapshot()` function.
-The description is a Solidity library, compiled with the tests. Unknown runs, the wrong chain and missing core code fail.
-The caller must supply Solidity; a directory of TOML artifacts is no longer a test input.
-
-## Fork and acceptance checks
+## Fork checks
 
 ```sh
-make test-fork RPC_URL=<mainnet-archive-rpc>
-make test-fork RUN=<run> RPC_URL=<deployment-rpc>
-make test-fork RUN=<run> PREPARE=false RPC_URL=<deployment-rpc>
+make -k test-fork
+make test-fork-<network>-<market>
+make test-fork RUN=<network> RPC_URL=<deployment-rpc>
+make test-fork RUN=<network> PREPARE=false RPC_URL=<deployment-rpc>
 make test-deployment RPC_URL=<mainnet-archive-rpc>
 ```
 
-Without command-line `RUN`, `test-fork` creates a fresh protocol, two WETH/wstETH markets, books, bundler and
-Vault V2 inside each suite's Forge fork. No Anvil, artifact directory or shell provisioning is required.
-With `RUN`, it reads the Solidity description, prepares missing/inert markets, and tests the resulting private state.
-With `PREPARE=false`, it tests existing state without preparing it. `RUN` and `PREPARE` from `.env` or the
-shell environment do not select the mode. Make sets `DEPLOYMENT_RUN` and `PREPARE_MARKETS` internally.
-`FORK_BLOCK=<block>` optionally pins the source state. The fresh and preparation recipes currently support
-mainnet WETH/wstETH; USDY is omitted from the fresh fixture. Other chains/pairs need a concrete fixture recipe.
+`test-fork` runs the fork suites once per market, each in its own Forge run; `-k` goes on past a failing market. A
+network's markets need its RPC variable (`RPC_URL` for mainnet, `HOODI_RPC_URL` for Hoodi) and fail without it; they
+run at `FORK_BLOCK` or `HOODI_FORK_BLOCK` when set, else at the latest block; a market not deployed at the block is deployed by its script
+over the network's protocol. No Anvil, artifact directory or shell provisioning is required.
+With `RUN`, it binds each recorded market of the network at the RPC's latest block and creates an inert one; with
+`PREPARE=false`, it tests existing state without preparing it and skips an inert market. Only a command-line `RUN`
+selects; Make sets `FORK_DEPLOY_SCRIPT`, `FORK_RUN` and `FORK_RUN_PREPARE` internally.
 
 | Recorded state | Preparation inside the Forge fork |
 | --- | --- |
-| Protocol only | Deploy the required missing market, activate and preseed |
-| Inert market | Validate identity, initial roles and parameters, then activate and preseed |
-| Active market | Validate identity and seed/route/pauser setup; preserve live parameters and balances |
+| Inert market | Activate and preseed |
+| Active market | Use as it is |
 | Missing code at a recorded address | Fail without replacing the deployment |
 
-Several markets share one protocol. Extend the typed required-market list when another market is reviewed.
-Preparation impersonates the executor inside Forge. Real Easy Track factory, preseed and motion flows remain
-integration tests of the Easy Track repository. External callers run `make test-fork RUN="$RUN"`
-against their post-vote RPC after supplying and registering a Solidity description; this never changes that source node.
+A market the core lacks is created by its activation motion where Easy Track registers the network's activation
+factory, recorded in `EasyTrack<Network>.sol`: the motion in flight whose calldata is the script's
+`activationParams()`, else a new one from the factory's trusted caller, enacted once its duration has passed; its
+preseed seeds the market. Where the factory is missing or not registered, as on mainnet until the vote, Easy Track is
+impersonated to send the script's `activationScript()` to the EVMScriptExecutor, and a test account seeds the market.
+Either way the executor then allows the market on the exit books. External callers run `make test-fork RUN="$RUN"`
+against their post-vote RPC after recording the deployment in the scripts' `getDeployment()`; this never changes that
+source node.
 The regression action starts Anvil at the caller's post-vote block with `--fork-state-by-number` for Hardhat
-compatibility, runs the Forge suites against Anvil, and stops it on exit.
+compatibility, runs the Forge suites and then State Mate on each `deployed/<network>/**/state-mate.yaml` against
+Anvil, and stops it on exit. The mainnet configs need the caller's `etherscan_token`.
 Callers using the old TOML export must migrate before using this branch.
 
-Verify an inert or activated deployment independently:
+## Activation
 
 ```sh
-make acceptance-run RUN=<run> MARKET=<name> RPC_URL=<deployment-rpc> \
-  ACCEPTANCE_PAUSER_COMMITTEE=<reviewed-address> ACCEPTANCE_ENABLE_SETTLEMENT=true \
-  ACCEPTANCE_STEWARD=<reviewed-steward-or-zero-address> \
-  ACCEPTANCE_FEE=<approved-fee-in-wad> \
-  ACCEPTANCE_MIN_CORE_SEED_SHARES=<reviewed-core-share-threshold> \
-  ACCEPTANCE_MIN_VAULT_SEED_SHARES=<reviewed-vault-share-threshold>
-make acceptance-run-multi RUN=<run> MARKET_A=<first> MARKET_B=<second> RPC_URL=<deployment-rpc> \
-  ACCEPTANCE_ENABLE_SETTLEMENT=true
+make activation-safe-tx MARKET=<network>/markets/<DeployScript>
 ```
 
-Acceptance checks initial-launch wiring, exact role sets, bytecode and recorded parameters. It is not an audit
-of later governance role changes. Activated checks require `ACCEPTANCE_STEWARD`; use the zero address only when the reviewed motion appoints no steward.
-Activated checks also require `ACCEPTANCE_FEE` and positive `ACCEPTANCE_MIN_CORE_SEED_SHARES` /
-`ACCEPTANCE_MIN_VAULT_SEED_SHARES`. Approve these values from the motion and preseed calculation before running;
-they are not inferred from live balances. Fee is compared exactly; both seed balances at `0x000000000000000000000000000000000000dEaD`
-must meet the reviewed share thresholds. These are share units, not loan-token amounts; the current Preseeder
-requires at least `1000000000` locked shares in each position. Transaction-level funding amounts remain part
-of the Easy Track motion replay and receipt checks.
-Readiness and activated suites choose their applicable state; the two-market
-suite rehearses sequential activation. It does not publish those transactions.
-
-## Pending governance
-
-`apply-pending`, `pending-stop` and `test-pending` retain the separate local-Anvil workflow for rehearsing a
-pending governance transaction. `test-pending` passes `PREPARE=false` to verify exactly the post-action state.
+prints the Safe transaction that creates a recorded market's activation motion: a Transaction Builder batch to
+import into the factory's trusted caller, and its safeTxHash at the Safe's current nonce, for the signers to match on
+their hardware wallets. It refuses a market with no recorded deployment and a network whose activation factory Easy
+Track does not register.
 
 ## State Mate
 
-Maintain protocol and per-market State Mate configurations by hand under `deployed/<run>/state-mate/`.
-Keep market-specific checks in `markets/<market>.yaml` and shared protocol checks in the protocol configuration.
-Review addresses, proxy implementations, Safe membership and thresholds, initial roles and approved motion
-parameters before running State Mate. Each market configuration must reflect that market's activation state.
+Each package under `deployed/<network>/` (`protocol/`, `markets/<market>/`) has one `state-mate.yaml`, written by hand:
+the package's expected current state, with its contracts' ABIs in `abis.json.gz` beside it. Update it in the change
+that moves that state: a deployment, an activation or a vote. Review addresses, proxy implementations, Safe membership
+and thresholds, roles and approved motion parameters against their sources, not against the chain. Run a config with
+`yarn start <config>` from a State Mate checkout at the commit the regression action pins, with `MAINNET_RPC_URL` or
+`HOODI_RPC_URL`, the variable the config names, and for mainnet `ETHERSCAN_TOKEN` and `ETHERSCAN_EXPLORER_TOKEN`.
+The Diffyscan configs sit beside the State Mate config of their package.
 
 ## Audit checksums
 
 Run `make audit-checksums` or `make audit-checksums REF=<git-ref>` to compare audited source digests.
-
-### Launch without Exit Book access
-
-For a market that must remain outside both Exit Book allowlists, pass
-`ACCEPTANCE_ALLOW_EXIT_BOOKS=false` to `make acceptance-run`. Activated acceptance then checks
-that the market and vault are not allowed. The default remains `true`. The pauser test runs in
-both modes; factory registration does not change a market allowlist.
-
-The local activation helper is [`docs/deployment/test-activation.sh`](../docs/deployment/test-activation.sh).
-It accepts only a loopback Anvil fork, registers the seven recorded factories when missing, and
-replays the activation motion. This is not a test of the full prerequisite DAO vote.
-Run `bash docs/deployment/test-activation.sh --help` for its inputs.
-
-Market verification configs are in `deployed/mainnet/state-mate/markets/weth-wsteth.yaml` and
-`deployed/mainnet/diffyscan/markets/weth-wsteth/`. Fill the deployment addresses and approved
-expectations before use. See [State Mate on a fork](../docs/deployment/fork-state-mate.md).

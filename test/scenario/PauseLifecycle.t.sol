@@ -14,7 +14,6 @@ import {IIrm as IrmIIrm} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IIrm.
 import {Id as IrmId, MarketParams as IrmMarketParams} from "@lido-lend-irm/lib/lido-lend/src/interfaces/IMorpho.sol";
 
 import {PausableUntil} from "../../src/utils/PausableUntil.sol";
-import {Protocol as MainnetProtocol} from "../../script/deployment/mainnet/artifacts/Protocol.sol";
 import {IPausableUntil} from "../../src/interfaces/IPausableUntil.sol";
 
 import {LidoLendSetup} from "../setup/LidoLendSetup.sol";
@@ -369,15 +368,15 @@ contract PauseLifecycleTest is LidoLendSetup {
         m.liquidate(keeper, borrower, 0, m.core.position(m.id, borrower).borrowShares);
     }
 
-    /// @dev A pause of the maximum duration in the recorded mainnet CircuitBreaker parameters turns a healthy borrower
-    /// into bad debt from interest alone.
+    /// @dev A pause of the CircuitBreaker's maximum duration, 60 days on mainnet, turns a healthy borrower into bad
+    /// debt from interest alone.
     function test_maxCircuitBreakerPauseAtFullUse_badDebtAtResume() public {
         Market storage m = _m();
         _seedFullUtilization();
         uint256 price = m.oracle.price();
         assertLt(m.ltvAt(borrower, price), LLTV, "setup: healthy when the pause starts");
 
-        _bookPauseAtResume(MainnetProtocol.circuitBreakerParameters().maxPauseDuration);
+        _bookPauseAtResume(60 days);
 
         assertEq(m.oracle.price(), price, "no price move");
         assertGt(m.ltvAt(borrower, price), WAD, "debt exceeds the collateral value");

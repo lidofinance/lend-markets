@@ -37,7 +37,7 @@ jobs:
   fork:
     name: fork tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -46,12 +46,22 @@ jobs:
 
       - uses: ./.github/actions/repo-setup
 
-      - name: integrations and acceptance on a Forge fork
+      # Every suite of the job forks the networks at the blocks current when it starts, so they see one state and a
+      # failure replays locally at the logged blocks.
+      - name: current block of each network
         env:
           RPC_URL: ${{ secrets.RPC_URL }}
+          HOODI_RPC_URL: ${{ secrets.HOODI_RPC_URL }}
         run: |
-          test -n "$RPC_URL" || { echo "::error::RPC_URL secret required for the fork job"; exit 1; }
-          make test-fork
+          test -n "$RPC_URL" && test -n "$HOODI_RPC_URL" || { echo "::error::RPC_URL and HOODI_RPC_URL secrets required for the fork job"; exit 1; }
+          echo "FORK_BLOCK=$(cast block-number --rpc-url "$RPC_URL")" | tee -a "$GITHUB_ENV"
+          echo "HOODI_FORK_BLOCK=$(cast block-number --rpc-url "$HOODI_RPC_URL")" | tee -a "$GITHUB_ENV"
+
+      - name: fork suites on every market
+        env:
+          RPC_URL: ${{ secrets.RPC_URL }}
+          HOODI_RPC_URL: ${{ secrets.HOODI_RPC_URL }}
+        run: make -k test-fork
 
       - name: deployment and preparation scenarios on a Forge fork
         env:

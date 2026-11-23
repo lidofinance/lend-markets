@@ -8,6 +8,12 @@
       "rev": "6829a5a962ece56564bd9d72d01c29cabf157579"
     }
   },
+  "lib/forge-std": {
+    "tag": {
+      "name": "v1.9.7",
+      "rev": "77041d2ce690e692d6e03cc812b57d1ddaa4d505"
+    }
+  },
   "lib/lend": {
     "branch": {
       "name": "main",
@@ -31,8 +37,5 @@
       "name": "v5.6.1",
       "rev": "7bf4727aacdbfaa0f36cbd664654d0c9e1dc52bf"
     }
-  },
-  "lib/vault-v2": {
-    "rev": "425f6b1fb3a1d25083a9515348bd5e7bd3ab9017"
   }
 }
