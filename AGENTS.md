@@ -21,9 +21,9 @@
   else at the latest block. The scripts get or deploy what the block lacks. A market the core lacks is created by its
   Easy Track activation motion, the one in flight or a new one, where Easy Track registers the network's activation
   factory, and otherwise by its script's `activationScript()` sent to the EVMScriptExecutor as Easy Track. Base suites
-  in `test/fork/` run on every market, on one market per kind or on the WETH/wstETH markets, as their `setUp` says;
-  `test/fork/markets/<vendor>/` (`lido`, `ondo`, `centrifuge`, `circle`) on the markets of
-  that vendor's oracle or token and skips the others. `make test-fork-<network>-<market>` runs `test/fork` on one
+  in `test/fork/` run on every market, on one market per kind or on the WETH/wstETH markets, as their `setUp` says
+  (a run of one market runs them all); `test/fork/markets/<vendor>/` (`lido`, `ondo`, `centrifuge`, `circle`) on the
+  markets of that vendor's oracle or token and skips the others. `make test-fork-<network>-<market>` runs `test/fork` on one
   market and `make test-fork` on every market; a market whose network's RPC variable (`RPC_URL`, `HOODI_RPC_URL`) is
   unset fails. The legacy `make test-fork RUN=<network>` binds each recorded market of the network at the latest block and
   creates an inert one; `PREPARE=false` leaves them as they are and skips an inert one. Only a Make command-line

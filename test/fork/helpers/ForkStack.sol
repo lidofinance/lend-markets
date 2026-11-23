@@ -163,9 +163,11 @@ abstract contract ForkStack is Test {
         lot = 2 * uint256(_activationConfig(market).minActivationAmount);
     }
 
-    /// @notice Skips the suite, before any fork, unless the target is a WETH/wstETH market: the suites of the
-    ///         network's shared contracts run once per network.
+    /// @notice In a run of every market (`FORK_ALL_MARKETS`), skips the suite, before any fork, unless the target is a
+    ///         WETH/wstETH market: the suites of the network's shared contracts run once per network. A run of one
+    ///         market runs the suite.
     function _onlyOnWethWsteth() internal {
+        if (!vm.envOr("FORK_ALL_MARKETS", false)) return;
         string[2] memory markets = ["DeployWethWstethMainnet", "DeployWethWstethHoodi"];
         for (uint256 i; i < markets.length; ++i) {
             if (_isTarget(markets[i])) return;
@@ -173,10 +175,11 @@ abstract contract ForkStack is Test {
         vm.skip(true, "ForkStack: the suite runs on the WETH/wstETH markets only");
     }
 
-    /// @notice Skips the suite, before any fork, unless the target is one of the markets that together cover each
-    ///         oracle kind, decimals pair, collateral restriction, loan token and network. A market of a new kind
-    ///         joins the list.
+    /// @notice In a run of every market (`FORK_ALL_MARKETS`), skips the suite, before any fork, unless the target is
+    ///         one of the markets that together cover each oracle kind, decimals pair, collateral restriction, loan
+    ///         token and network. A market of a new kind joins the list. A run of one market runs the suite.
     function _onlyOnOneMarketPerKind() internal {
+        if (!vm.envOr("FORK_ALL_MARKETS", false)) return;
         string[6] memory markets = [
             "DeployWethWstethMainnet",
             "DeployUsdcUsdyMainnet",

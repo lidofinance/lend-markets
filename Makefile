@@ -147,6 +147,7 @@ unexport FORK_TARGETS
 $(FORK_TARGETS): build-deps
 
 test-fork: $(FORK_TARGETS) ## Every market; run with make -k
+test-fork: export FORK_ALL_MARKETS := true
 
 test-deployment: ## Solidity deployment scenarios on a Forge fork; RPC_URL, optional FORK_BLOCK
 	FOUNDRY_PROFILE=deployment forge test -vv
