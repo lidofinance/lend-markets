@@ -12,7 +12,7 @@ import {Market} from "../setup/Types.sol";
 import {MarketActions} from "../setup/MarketActions.sol";
 import {ForkStack} from "./helpers/ForkStack.sol";
 
-/// @notice The frontend guide's bundles through the deployed Bundler3 and its adapters, on every market: a vault
+/// @notice The frontend guide's bundles through the deployed Bundler3 and its adapters, on one market per kind: a vault
 ///         deposit, posting collateral, a borrow, closing a position and a lender's exit. Each lands its tokens on the
 ///         user and leaves nothing on the dispatcher or the adapters. Posting collateral moves it through the general
 ///         adapter, so it skips where the collateral does not admit the adapter: a Centrifuge member list holds only
@@ -25,6 +25,7 @@ contract BundledFlowsForkTest is ForkStack {
     address internal vaultAdapter;
 
     function setUp() public {
+        _onlyOnOneMarketPerKind();
         _setUpTarget();
         if (bundler.bundler == address(0)) vm.skip(true, "Bundler: absent in this deployment");
         bundler3 = IBundler3(bundler.bundler);

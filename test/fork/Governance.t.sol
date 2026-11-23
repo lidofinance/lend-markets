@@ -27,6 +27,7 @@ contract GovernanceForkTest is ForkStack {
     address internal STRANGER;
 
     function setUp() public {
+        _onlyOnWethWsteth();
         _setUpTarget();
         facade = _facade();
         executor = _executor();

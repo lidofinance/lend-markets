@@ -44,6 +44,7 @@ contract VaultFallbackExitTest is ForkStack {
     uint256 internal targetPostRebaseLtv;
 
     function setUp() public {
+        _onlyOnOneMarketPerKind();
         _setUpTarget();
         _accrueInterest(); // fold in pending interest up front so the exact idle/liquidity math below holds
         _repayExistingBorrowers(); // a live borrower must not outrank or outlast the test's borrowers

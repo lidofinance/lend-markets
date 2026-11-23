@@ -20,6 +20,7 @@ contract GuardianSignalsFlowForkTest is ForkStack {
     address[] internal guardians;
 
     function setUp() public {
+        _onlyOnOneMarketPerKind();
         _setUpTarget();
         facade = _facade();
         executor = _executor();

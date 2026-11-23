@@ -43,6 +43,7 @@ contract ExitBooksForkTest is ForkStack {
     uint256 internal requestAssets;
 
     function setUp() public {
+        _onlyOnOneMarketPerKind();
         _setUpTarget();
         if (books.morpho == address(0) || books.erc4626 == address(0)) {
             vm.skip(true, "ExitBooks: no books in this deployment");

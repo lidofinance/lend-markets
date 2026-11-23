@@ -49,7 +49,8 @@ Each run binds one market, the one of the deploy script that `FORK_DEPLOY_SCRIPT
 contracts, which must have code at the block, and deploy what is not recorded. A market the core lacks is created by
 its Easy Track activation motion, the one in flight or a new one, where Easy Track registers the network's activation
 factory; elsewhere Easy Track is impersonated to send the script's activation EVMScript to the EVMScriptExecutor, and
-a test account seeds the market. The base suites run on every market, a vendor's suites on its markets. The source
+a test account seeds the market. The base suites run on every market, on one market per kind or on the WETH/wstETH markets, as each suite's `setUp`
+says; a vendor's suites on its markets. The source
 RPC is unchanged; no intermediate artifacts are written.
 
 - **Requires:** an archive RPC per network: `RPC_URL` for mainnet, `HOODI_RPC_URL` for Hoodi.

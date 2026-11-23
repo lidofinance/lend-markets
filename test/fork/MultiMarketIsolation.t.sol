@@ -24,6 +24,7 @@ contract MultiMarketIsolationForkTest is ForkStack {
     Market internal other;
 
     function setUp() public {
+        _onlyOnWethWsteth();
         _setUpTarget();
         MarketDeployConfig memory p = parameters;
         p.market.lltv -= 0.01e18;

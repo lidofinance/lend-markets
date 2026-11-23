@@ -15,6 +15,7 @@ contract BorrowerActivationForkTest is ForkStack {
     using MarketActions for Market;
 
     function setUp() public {
+        _onlyOnOneMarketPerKind();
         _setUpTarget();
         LENDER = _freshActor(market, "activation.lender");
         BORROWER = _freshActor(market, "activation.borrower");

@@ -21,7 +21,8 @@
   else at the latest block. The scripts get or deploy what the block lacks. A market the core lacks is created by its
   Easy Track activation motion, the one in flight or a new one, where Easy Track registers the network's activation
   factory, and otherwise by its script's `activationScript()` sent to the EVMScriptExecutor as Easy Track. Base suites
-  in `test/fork/` run on every market; `test/fork/markets/<vendor>/` (`lido`, `ondo`, `centrifuge`, `circle`) on the markets of
+  in `test/fork/` run on every market, on one market per kind or on the WETH/wstETH markets, as their `setUp` says;
+  `test/fork/markets/<vendor>/` (`lido`, `ondo`, `centrifuge`, `circle`) on the markets of
   that vendor's oracle or token and skips the others. `make test-fork-<network>-<market>` runs `test/fork` on one
   market and `make test-fork` on every market; a market whose network's RPC variable (`RPC_URL`, `HOODI_RPC_URL`) is
   unset fails. The legacy `make test-fork RUN=<network>` binds each recorded market of the network at the latest block and
@@ -96,10 +97,14 @@
   vendor's oracle or token goes into `test/fork/markets/<vendor>/` and skips other markets in `setUp`. Call
   `_setUpTarget()` in `setUp` and drive `market` with the ForkStack helpers and MarketActions: `_freshActor`,
   `collateralIssuer.dealCollateral`, `_setOraclePrice` and `_setPriceForLtv` work on every market. A suite that needs
-  a second market deploys it with `script.deploy` and creates it with `_createMarket`. Protocol and dependency
+  a second market deploys it with `script.deploy` and creates it with `_createMarket`. A suite of the network's
+  shared contracts calls `_onlyOnWethWsteth()` first in `setUp`, and one that depends only on the market's kind
+  `_onlyOnOneMarketPerKind()`. Protocol and dependency
   addresses are fields of `ForkStack` (`protocol`, `books`, `bundler`).
 - Adding a market: its deploy script, an import in `ForkNetworks.sol`, its `test-fork-<network>-<market>` target in the
-  Makefile and in `FORK_TARGETS`, and its `deployed/<network>/markets/<market>/` once deployed; no test code. A new
+  Makefile and in `FORK_TARGETS`, and its `deployed/<network>/markets/<market>/` once deployed; no test code, except
+  that a market of a new kind (oracle, decimals pair, collateral restriction or loan token) joins the list of
+  `_onlyOnOneMarketPerKind` in `ForkStack.sol`. A new
   collateral issuer is a `ForkCollateralIssuer<Issuer>` contract.
 
 ## Dependency Policy
@@ -156,7 +161,7 @@ test/
 - `simulation/<Market>Solvency.t.sol` — seeded 30- and 365-day solvency simulations on a freshly deployed
   stack with the default market config. The driver draws everyday moves by odds and schedules each rare event
   once per run.
-- `fork/<Flow>.t.sol` — integration tests on every market; `fork/markets/<vendor>/` on the markets of that vendor's
+- `fork/<Flow>.t.sol` — integration tests on every market, one market per kind or the WETH/wstETH markets; `fork/markets/<vendor>/` on the markets of that vendor's
   oracle or token. `make test-fork` to run. The deployed state is checked by State Mate against
   `deployed/<network>/**/state-mate.yaml`; see `script/DEPLOYMENT.md`.
 

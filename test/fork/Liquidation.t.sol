@@ -16,6 +16,7 @@ contract LiquidationForkTest is ForkStack {
     address internal KEEPER;
 
     function setUp() public {
+        _onlyOnOneMarketPerKind();
         _setUpTarget();
         _seedLenderAndBorrower();
 

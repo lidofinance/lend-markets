@@ -57,6 +57,7 @@ contract LidoLendScenarioTest is ForkStack {
     ///         variant did. `price` is the LIVE oracle rate captured before any mock.
 
     function setUp() public {
+        _onlyOnOneMarketPerKind();
         _setUpTarget();
         _accrueInterest(); // fold in pending interest up front so exact totals / delta math below holds
         _repayExistingBorrowers(); // a live borrower must not outrank or outlast the test's borrowers

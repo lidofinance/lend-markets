@@ -20,6 +20,7 @@ contract FreezeLifecycleForkTest is ForkStack {
     address internal STRANGER;
 
     function setUp() public {
+        _onlyOnWethWsteth();
         _setUpTarget();
         dashboard = _dashboard();
         facade = _facade();

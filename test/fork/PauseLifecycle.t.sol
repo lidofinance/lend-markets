@@ -40,6 +40,7 @@ contract PauseLifecycleForkTest is ForkStack {
     address internal STRANGER;
 
     function setUp() public {
+        _onlyOnWethWsteth();
         _setUpTarget();
         circuitBreaker = ICircuitBreaker(protocol.circuitBreaker);
         resealManager = _resealManager();

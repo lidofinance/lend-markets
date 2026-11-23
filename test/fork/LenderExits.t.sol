@@ -19,6 +19,7 @@ contract LenderExitsForkTest is ForkStack {
     address internal RECEIVER;
 
     function setUp() public {
+        _onlyOnOneMarketPerKind();
         _setUpTarget();
         _seedLenderAndBorrower();
         DIRECT_LENDER = _freshActor(market, "lenderExits.directLender");

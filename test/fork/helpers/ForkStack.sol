@@ -163,6 +163,40 @@ abstract contract ForkStack is Test {
         lot = 2 * uint256(_activationConfig(market).minActivationAmount);
     }
 
+    /// @notice Skips the suite, before any fork, unless the target is a WETH/wstETH market: the suites of the
+    ///         network's shared contracts run once per network.
+    function _onlyOnWethWsteth() internal {
+        string[2] memory markets = ["DeployWethWstethMainnet", "DeployWethWstethHoodi"];
+        for (uint256 i; i < markets.length; ++i) {
+            if (_isTarget(markets[i])) return;
+        }
+        vm.skip(true, "ForkStack: the suite runs on the WETH/wstETH markets only");
+    }
+
+    /// @notice Skips the suite, before any fork, unless the target is one of the markets that together cover each
+    ///         oracle kind, decimals pair, collateral restriction, loan token and network. A market of a new kind
+    ///         joins the list.
+    function _onlyOnOneMarketPerKind() internal {
+        string[6] memory markets = [
+            "DeployWethWstethMainnet",
+            "DeployUsdcUsdyMainnet",
+            "DeployUsdcJtrsyMainnet",
+            "DeployUsdcDejtrsyMainnet",
+            "DeployWethWstethHoodi",
+            "DeployUsdtUsdyHoodi"
+        ];
+        for (uint256 i; i < markets.length; ++i) {
+            if (_isTarget(markets[i])) return;
+        }
+        vm.skip(true, "ForkStack: the suite runs on one market per kind");
+    }
+
+    /// @dev Whether the target's deploy script is named `name`.
+    function _isTarget(string memory name) private view returns (bool) {
+        string memory path = vm.envOr("FORK_DEPLOY_SCRIPT", DEFAULT_DEPLOY_SCRIPT);
+        return keccak256(bytes(ForkNetworks.scriptName(path))) == keccak256(bytes(name));
+    }
+
     /// @notice Forks the network of the target's deploy script and sets up its market there, over the network's
     ///         protocol: the contracts that the scripts give, else new ones, with the market created when
     ///         `createIfMissing` is set and the core lacks it. Logs where the contracts come from and whether the

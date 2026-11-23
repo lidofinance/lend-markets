@@ -22,6 +22,7 @@ contract OracleOutageForkTest is ForkStack {
     address internal KEEPER;
 
     function setUp() public {
+        _onlyOnOneMarketPerKind();
         _setUpTarget();
         _seedLenderAndBorrower();
         market.setSettlementLtv(BORROWER, 0.05e18);

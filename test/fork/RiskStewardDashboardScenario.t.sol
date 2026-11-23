@@ -34,6 +34,7 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
     address internal STEWARD;
 
     function setUp() public {
+        _onlyOnWethWsteth();
         _setUpTarget();
         _accrueInterest(); // fold in pending interest so live-config reads and per-borrower asserts are exact
 
