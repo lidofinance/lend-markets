@@ -1,6 +1,6 @@
-# Fill approved rates before rehearsal; production addresses after recording; expected price at the verification block.
-# Inert WETH/wstETH market on mainnet (block 26406665): components deployed, core market not created, before guardian delegation or heartbeats.
-# Fill addresses, APR-derived rates and the independently calculated price before running.
+# Fill approved rates before rehearsal; production addresses after recording.
+# Inert WETH/wstETH market on mainnet (block 26451206): components deployed, core market not created, guardian delegated, before heartbeats.
+# Fill addresses and APR-derived rates before running.
 # Standalone market verification: shared entries read only this market; proxy metadata binds the ABI.
 # Fill the participating Safe expectations from the approved roster before rehearsal.
 # Complete non-enumerable instant-activation caller checks from controller event history in the plan.
@@ -231,7 +231,8 @@ l1:
         proxy__getIsOssified: false
       checks:
         WSTETH: '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0'
-        price: '1249147186214455561684769463261025929'
+        # Deliberate exclusion: getStETHByWstETH(1e36) moves with every stETH share-rate change; WSTETH and the implementation fix the formula.
+        price: null
     marketGuardianSignals:
       name: GuardianSignals
       address: '0xc8a8CBBF4c55980F85332fD8470DF0fC52d690aC'
@@ -247,13 +248,13 @@ l1:
         getGuardianCount: 1
         getGuardians:
         - - '0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E'
-        - - '0x0000000000000000000000000000000000000000'
+        - - '0xB3779664CeE33Df484D7e610eD600fe1A2983651'
         getQuorum: 1
         getSuspectWindow: 86400
         getDelegate:
         - args:
           - '0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E'
-          result: '0x0000000000000000000000000000000000000000'
+          result: '0xB3779664CeE33Df484D7e610eD600fe1A2983651'
         getHeartbeat:
         - args:
           - '0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E'
@@ -472,8 +473,14 @@ l1:
         label: guard
       checks:
         VERSION: '1.4.1'
-        getThreshold: 1
+        getThreshold: 3
         getOwners:
+        - '0x21b82AA7149c8Fd0562E78b740937442FfD43094'
+        - '0xcD0cDa37f68a6758f86a4e2910E60174af1190B5'
+        - '0x59F8D74Fe49d5ebEAc069E3baf07eB4b614BD5A7'
+        - '0x28939ef21690Fe8358E93d661d1ce6d7fA9154F3'
+        - '0xd0e99d6A51201C24421cD6DAfFFeE4f0E08BCd91'
+        - '0xeF83852FaBd22bda23857abF171e05Bae9463F95'
         - '0x62c89F5768D0FeC0915fb614C5eDd9fdeaA2A3fd'
         # Replace the first field with an address array. Add every additional page if the next pointer is not the sentinel.
         getModulesPaginated:
@@ -512,8 +519,14 @@ l1:
         label: guard
       checks:
         VERSION: '1.4.1'
-        getThreshold: 1
+        getThreshold: 5
         getOwners:
+        - '0x21b82AA7149c8Fd0562E78b740937442FfD43094'
+        - '0xcD0cDa37f68a6758f86a4e2910E60174af1190B5'
+        - '0x59F8D74Fe49d5ebEAc069E3baf07eB4b614BD5A7'
+        - '0x28939ef21690Fe8358E93d661d1ce6d7fA9154F3'
+        - '0xd0e99d6A51201C24421cD6DAfFFeE4f0E08BCd91'
+        - '0xeF83852FaBd22bda23857abF171e05Bae9463F95'
         - '0x62c89F5768D0FeC0915fb614C5eDd9fdeaA2A3fd'
         # Replace the first field with an address array. Add every additional page if the next pointer is not the sentinel.
         getModulesPaginated:
@@ -552,8 +565,13 @@ l1:
         label: guard
       checks:
         VERSION: '1.4.1'
-        getThreshold: 1
+        getThreshold: 3
         getOwners:
+        - '0x9D557BDA79f6F4785C88997Ac180FFe1c3d0A62b'
+        - '0xd0e99d6A51201C24421cD6DAfFFeE4f0E08BCd91'
+        - '0x912e21CdA3D7012146da4Df33309d860a9eb0bEb'
+        - '0xeD20740c4cE9A61CE41bb3954186aFa0F5F80D9b'
+        - '0xeF83852FaBd22bda23857abF171e05Bae9463F95'
         - '0x62c89F5768D0FeC0915fb614C5eDd9fdeaA2A3fd'
         # Replace the first field with an address array. Add every additional page if the next pointer is not the sentinel.
         getModulesPaginated:

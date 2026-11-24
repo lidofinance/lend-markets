@@ -1770,7 +1770,7 @@ On-chain state against manually reviewed YAML. Maintain protocol and per-market 
 - [x] Hoodi, after the activation replay on a fork — [`script/config/hoodi-testnet/state-mate/post-activation-fork.yaml`](script/config/hoodi-testnet/state-mate/post-activation-fork.yaml)
 - [x] Hoodi, live after the pending motions — [`script/config/hoodi-testnet/state-mate/live.yaml`](script/config/hoodi-testnet/state-mate/live.yaml)
 - [x] mainnet protocol, factories, bundler/adapters and participating committee Safes — [mainnet protocol config](deployed/mainnet/state-mate/mainnet.yaml)
-- [ ] post-deployment mainnet market and its IRM config: fill addresses and activation state in a separate market config after deployment
+- [x] post-deployment mainnet market and its IRM config — [WETH/wstETH market config](deployed/mainnet/state-mate/markets/weth-wsteth.yaml)
 
 ## Unreachable branches
 Coverage misses two `src/` branches, on forge 1.7.1 and 1.8.3 alike.
