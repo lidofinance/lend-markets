@@ -456,9 +456,9 @@ constructor(address source, address loanToken, address collateralToken);
 
 ## CentrifugeNavOracle
 
-NAV oracle for a Centrifuge share class. It reads the share price from the Centrifuge Spoke.
+NAV oracle for a Centrifuge share class. It reads the share price in the loan token from the share class's Centrifuge vault, whose asset is the loan token.
 
-The adapter does not use the validity check of the Spoke, because a pool can set an unbounded maximum age. The adapter refuses a price older than its own `MAX_PRICE_AGE`. The issuer supplies the time of the price, so the adapter also refuses a time after the block time.
+The vault's time stamp is the later of the share price's and the asset price's. The adapter refuses a stamp older than its own `MAX_PRICE_AGE`. The issuer supplies the stamp, so the adapter also refuses one after the block time.
 
 ### Errors
 
@@ -468,7 +468,15 @@ The adapter does not use the validity check of the Spoke, because a pool can set
 error ShareTokenMismatch(address shareToken, address collateralToken);
 ```
 
-The token of the share class on the Spoke is not the collateral token.
+The share token of the vault is not the collateral token.
+
+#### `AssetMismatch`
+
+```solidity
+error AssetMismatch(address asset, address loanToken);
+```
+
+The asset of the vault is not the loan token.
 
 #### `MaxPriceAgeIsZero`
 
@@ -484,7 +492,7 @@ error MaxPriceAgeIsZero();
 error StalePrice(uint64 computedAt);
 ```
 
-The Spoke computed the share price at `computedAt`, which is more than `MAX_PRICE_AGE` ago.
+The vault's price stamp `computedAt` is more than `MAX_PRICE_AGE` ago.
 
 #### `PriceFromFuture`
 
@@ -492,7 +500,7 @@ The Spoke computed the share price at `computedAt`, which is more than `MAX_PRIC
 error PriceFromFuture(uint64 computedAt);
 ```
 
-The Spoke gives the share price the time `computedAt`, which is after the block time.
+The vault's price stamp `computedAt` is after the block time.
 
 ### Functions
 
@@ -500,9 +508,7 @@ The Spoke gives the share price the time `computedAt`, which is after the block 
 
 ```solidity
 constructor(
-    address spoke,
-    uint64 poolId,
-    bytes16 scId,
+    address vault,
     uint256 maxPriceAge,
     address loanToken,
     address collateralToken
@@ -513,7 +519,5 @@ constructor(
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `SPOKE` | `ICentrifugeSpoke` (immutable) | Centrifuge Spoke that holds the share prices. |
-| `POOL_ID` | `uint64` (immutable) | Pool of the collateral token. |
-| `SHARE_CLASS_ID` | `bytes16` (immutable) | Share class of the collateral token. |
-| `MAX_PRICE_AGE` | `uint256` (immutable) | Largest age of a share price that the adapter returns, in seconds since the Spoke computed it. |
+| `VAULT` | `ICentrifugeVault` (immutable) | Centrifuge vault of the collateral token. |
+| `MAX_PRICE_AGE` | `uint256` (immutable) | Largest age of the vault's price stamp that the adapter accepts, in seconds. |

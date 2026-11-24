@@ -22,7 +22,7 @@ flowchart LR
 
 ## Scope
 
-In scope are `TrailingAnchorOracleBase`, which holds the rules and implements the core's `IOracle`, and its two adapters, which supply the current price: `UsdyNavOracle` reads USDY's redemption value from Ondo's USDY oracle, and `CentrifugeNavOracle` a share class's price from its Centrifuge Spoke ([Adapters](#adapters)).
+In scope are `TrailingAnchorOracleBase`, which holds the rules and implements the core's `IOracle`, and its two adapters, which supply the current price: `UsdyNavOracle` reads USDY's redemption value from Ondo's USDY oracle, and `CentrifugeNavOracle` a share class's price from its Centrifuge vault ([Adapters](#adapters)).
 
 Out of scope: who holds the roles, in [Privileged Roles](roles.md), and the markets' freeze and pause, in [Market controller](market-controller.md).
 
@@ -312,9 +312,9 @@ The invariants hold for one storage namespace behind its proxy, from its `initia
 
 What the code does not check:
 
-- **Source age.** `UsdyNavOracle` does not read when the source last updated, and an anchor never goes stale. A USDY source that stops changing stays priced; a monitor and the markets' freeze have to catch it. `CentrifugeNavOracle` reverts on a share price older than `MAX_PRICE_AGE`.
-- **Source binding.** The base reads `loanToken` and `collateralToken` only for their decimals. Nothing ties the USDY source to the USDY token. `CentrifugeNavOracle` requires the Spoke's share token of `poolId` and `scId` to be the collateral token.
-- **Loan-token price.** One loan token counts as one unit of the source's currency, and the oracle does not read the loan token's own price. This is an accepted risk. A loan token below one unit makes the price too low, so borrowers can be liquidated early. A loan token above one unit makes the price too high by the same fraction. At a 98% LLTV, the sizing budget for a high price is 1.43%, so a 1% move uses most of it.
+- **Source age.** `UsdyNavOracle` does not read when the source last updated, and an anchor never goes stale. A USDY source that stops changing stays priced; a monitor and the markets' freeze have to catch it. `CentrifugeNavOracle` reverts on a vault price stamp older than `MAX_PRICE_AGE`. The stamp is the later of the share price's and the asset price's, so a newer asset price can hide an older share price.
+- **Source binding.** The base reads `loanToken` and `collateralToken` only for their decimals. Nothing ties the USDY source to the USDY token. `CentrifugeNavOracle` requires the vault's share token to be the collateral token and its asset to be the loan token.
+- **Loan-token price.** One loan token counts as one unit of the source's currency, and the oracle does not read the loan token's own price. This is an accepted risk. A loan token below one unit makes the price too low, so borrowers can be liquidated early. A loan token above one unit makes the price too high by the same fraction. At a 98% LLTV, the sizing budget for a high price is 1.43%, so a 1% move uses most of it. For `CentrifugeNavOracle` the source's currency is the loan token: the vault converts the share price at the pool's own price of the loan token.
 - **Sizing by the manager.** No contract checks the sizing rule. A `setParameters` call with a too-wide corridor lets a faulty source leave bad debt. A parameter change is a Lido DAO governance action, and its reviewers must check the rule.
 - **Earlier parameters.** The sizing rule speaks for one set of values, and the anchor keeps its place past a new floor or ceiling. Two calls that each pass the rule can together break it. An example at a 98% LLTV: the first call sets no floor and a 1.27% ceiling, and a re-anchor moves the anchor up. The second call sets no ceiling and a 1.26% floor, and a re-anchor moves the anchor down. The lowest price is then under the debt of a position opened at the highest price.
 - **Market value.** The price is the source's value. A secondary-market discount of the collateral token, or limits on redeeming it, are not reflected.
@@ -360,22 +360,25 @@ The constructor reverts with `UnsupportedDecimals` when `36 + loanDecimals < col
 | Contract | Constructor | Source call | Current price |
 |---|---|---|---|
 | `UsdyNavOracle` | `(source, loanToken, collateralToken)` | Ondo's USDY oracle, `getPrice()` | USDY redemption value in USD, 18 decimals |
-| `CentrifugeNavOracle` | `(spoke, poolId, scId, maxPriceAge, loanToken, collateralToken)` | Spoke `markersPricePoolPerShare(poolId, scId)`, then `pricePoolPerShare(poolId, scId, false)` | share-class price in the pool currency, 18 decimals |
+| `CentrifugeNavOracle` | `(vault, maxPriceAge, loanToken, collateralToken)` | vault `priceLastUpdated()`, then `convertToAssets(10^36 / PRICE_SCALE)` | share price in the loan token, 18 decimals |
 
 The fork tests read these mainnet sources:
 
 | Source | Address | Collateral |
 |---|---|---|
 | Ondo's USDY oracle | `0xA0219AA5B31e65Bc920B5b6DFb8EdF0988121De0` | USDY |
-| Centrifuge Spoke | `0xEC3582fcDc34078a4B7a8c75a5a3AE46f48525aB` | JTRSY: pool `281474976710662`, share class `0x00010000000000060000000000000001` |
+| Centrifuge JTRSY/USDC vault | `0xFE6920eB6C421f1179cA8c8d4170530CDBdfd77A` | JTRSY |
+| Centrifuge JAAA/USDC vault | `0x4880799eE5200fC58DA299e965df644fBf46780B` | JAAA |
+| Centrifuge deJTRSY/USDC vault | `0x18Ab9fC0B2e4Fef9e0e03c8EC63BA287a3238257` | deJTRSY |
+| Centrifuge deJAAA/USDC vault | `0x4865BC9701fBD1207A7B50e2aF442C7DAf154c9c` | deJAAA |
 
-`ZeroAddress` refuses a zero token, source or Spoke in a constructor, and a zero `admin` in `initialize`.
+`ZeroAddress` refuses a zero token, source or vault in a constructor, and a zero `admin` in `initialize`.
 
-`CentrifugeNavOracle` passes `checkValidity = false`, because the Spoke's own maximum age is unbounded on the deployed pools. The adapter adds its own checks:
+`CentrifugeNavOracle` adds its own checks:
 
 - The constructor reverts with `MaxPriceAgeIsZero` on a zero `maxPriceAge`.
-- The constructor reverts with `ShareTokenMismatch(shareToken, collateralToken)` when the Spoke's `shareToken(poolId, scId)` is not the collateral token.
-- Each price read reverts with `StalePrice(computedAt)` when `block.timestamp − computedAt > MAX_PRICE_AGE`. Thus, `price()`, `updateAnchor()`, `acceptPrice()` and `initialize` revert on an old price.
+- The constructor reverts with `ShareTokenMismatch(shareToken, collateralToken)` when the vault's `share()` is not the collateral token, and with `AssetMismatch(asset, loanToken)` when its `asset()` is not the loan token.
+- Each price read reverts with `StalePrice(computedAt)` when `block.timestamp − computedAt > MAX_PRICE_AGE`, with `computedAt` the vault's `priceLastUpdated()`. Thus, `price()`, `updateAnchor()`, `acceptPrice()` and `initialize` revert on an old price.
 - Each price read reverts with `PriceFromFuture(computedAt)` when `computedAt > block.timestamp`. The issuer supplies `computedAt`, so it can be later than the block time.
 
 From February to November 2026, the oldest JTRSY and JAAA prices were about 131 hours old, after the Easter holidays. A `MAX_PRICE_AGE` of 7 days does not stop these honest prices.

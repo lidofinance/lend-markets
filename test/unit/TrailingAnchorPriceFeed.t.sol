@@ -11,7 +11,7 @@ import {TrailingAnchorKind, TrailingAnchorPriceFeedSpec} from "../../script/depl
 import {TrailingAnchorPriceFeed} from "../../script/deployment/TrailingAnchorPriceFeed.sol";
 
 import {MockERC20} from "../setup/Mocks.sol";
-import {MockCentrifugeSpoke, MockOndoPriceGetter} from "../setup/NavSourceMocks.sol";
+import {MockCentrifugeVault, MockOndoPriceGetter} from "../setup/NavSourceMocks.sol";
 import {TrailingAnchorOracleModel} from "../setup/TrailingAnchorOracleModel.sol";
 
 /// @dev External entry points, so that a test can expect a revert of the library.
@@ -79,17 +79,15 @@ contract TrailingAnchorPriceFeedTest is Test {
 
     /// @dev Each Centrifuge field of the spec lands in its own immutable.
     function test_implementation_buildsTheCentrifugeAdapter() external {
-        (MockCentrifugeSpoke spoke, TrailingAnchorPriceFeedSpec memory s) = _centrifugeSpec();
+        (MockCentrifugeVault vault, TrailingAnchorPriceFeedSpec memory s) = _centrifugeSpec();
         CentrifugeNavOracle adapter = CentrifugeNavOracle(harness.implementation(s));
-        assertEq(address(adapter.SPOKE()), address(spoke), "SPOKE");
-        assertEq(adapter.POOL_ID(), s.poolId, "POOL_ID");
-        assertEq(adapter.SHARE_CLASS_ID(), s.shareClassId, "SHARE_CLASS_ID");
+        assertEq(address(adapter.VAULT()), address(vault), "VAULT");
         assertEq(adapter.MAX_PRICE_AGE(), 3 days, "MAX_PRICE_AGE");
         assertEq(adapter.PRICE_SCALE(), 1e18, "PRICE_SCALE");
     }
 
     /// @dev The build runs the adapter's own share token check, so a spec whose collateral is not the share token of
-    ///      its pool builds no reference.
+    ///      its vault builds no reference.
     function testRevert_implementation_centrifugeCollateralIsNotTheShareToken() external {
         (, TrailingAnchorPriceFeedSpec memory s) = _centrifugeSpec();
         address share = s.collateralToken;
@@ -273,17 +271,13 @@ contract TrailingAnchorPriceFeedTest is Test {
         return [nav.DEFAULT_ADMIN_ROLE(), nav.MANAGER_ROLE(), nav.PRICE_ACCEPTOR_ROLE()];
     }
 
-    function _centrifugeSpec() internal returns (MockCentrifugeSpoke spoke, TrailingAnchorPriceFeedSpec memory s) {
-        uint64 poolId = 281474976710662;
-        bytes16 shareClassId = 0x00010000000000060000000000000001;
+    function _centrifugeSpec() internal returns (MockCentrifugeVault vault, TrailingAnchorPriceFeedSpec memory s) {
         MockERC20 share = new MockERC20("JTRSY", "JTRSY", 6);
-        spoke = new MockCentrifugeSpoke(poolId, shareClassId, address(share));
-        spoke.setCurrentPrice(1e18);
+        vault = new MockCentrifugeVault(address(share), spec.loanToken);
+        vault.setCurrentPrice(1e18);
         s = spec;
         s.kind = TrailingAnchorKind.Centrifuge;
-        s.source = address(spoke);
-        s.poolId = poolId;
-        s.shareClassId = shareClassId;
+        s.source = address(vault);
         s.maxPriceAge = 3 days;
         s.collateralToken = address(share);
     }

@@ -29,11 +29,7 @@ library TrailingAnchorPriceFeed {
         if (spec.kind == TrailingAnchorKind.Usdy) {
             return address(new UsdyNavOracle(spec.source, spec.loanToken, spec.collateralToken));
         }
-        return address(
-            new CentrifugeNavOracle(
-                spec.source, spec.poolId, spec.shareClassId, spec.maxPriceAge, spec.loanToken, spec.collateralToken
-            )
-        );
+        return address(new CentrifugeNavOracle(spec.source, spec.maxPriceAge, spec.loanToken, spec.collateralToken));
     }
 
     /// @notice The price feed kind that a deployment artifact records for `kind`.

@@ -54,7 +54,7 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
 
         // Weighted: source moves, window edges, updates, the keeper's hour and a source settling at its pending anchor
         // appear more than once, since a pending anchor needs a price outside the bounds and a re-anchor needs its
-        // window. A Spoke source also restamps its price.
+        // window. A vault source also restamps its price.
         bytes4[] memory selectors = new bytes4[](_maxPriceAge() == 0 ? 19 : 20);
         selectors[0] = TrailingAnchorOracleHandler.stepSource.selector;
         selectors[1] = TrailingAnchorOracleHandler.stepSource.selector;
@@ -306,7 +306,7 @@ contract TrailingAnchorOracleCentrifugeInvariant is TrailingAnchorOracleInvarian
         return MAX_PRICE_AGE;
     }
 
-    /// @dev The stamp action reaches each refusal of the Spoke's stamp: a pending anchor whose window closes while the
+    /// @dev The stamp action reaches each refusal of the vault's stamp: a pending anchor whose window closes while the
     ///      price is stale, and a price stamped after the block. A fresh stamp then records a new pending anchor.
     function test_stampCases_areReachable() public {
         handler.moveSource(0);

@@ -15,7 +15,7 @@ import {
     TrailingAnchorOracleUpdate
 } from "../setup/TrailingAnchorOracleModel.sol";
 import {MockERC20} from "../setup/Mocks.sol";
-import {INavSourceMock, MockCentrifugeSpoke, MockOndoPriceGetter} from "../setup/NavSourceMocks.sol";
+import {INavSourceMock, MockCentrifugeVault, MockOndoPriceGetter} from "../setup/NavSourceMocks.sol";
 
 /// @notice A year of NAV series shaped like the token classes the oracle prices, each replayed through the adapter of
 ///         its source with the bounds and rates sized for its class:
@@ -80,9 +80,6 @@ contract NavOracleReplayTest is Test {
     uint256 internal constant STRESS_START = 100;
     uint256 internal constant STRESS_STEP = 0.0019e18;
     uint256 internal constant RECOVERY_STEP = 0.0016e18;
-
-    uint64 internal constant POOL_ID = 281474976710662;
-    bytes16 internal constant SHARE_CLASS_ID = 0x00010000000000060000000000000001;
 
     MockERC20 internal usdc;
 
@@ -311,18 +308,16 @@ contract NavOracleReplayTest is Test {
         uint256 belowBase,
         uint256 aboveBase
     ) internal returns (TrailingAnchorOracleBase, INavSourceMock) {
-        (address impl, INavSourceMock spoke) = _centrifugeImplementation(initialPrice);
-        return (_deploy(impl, lltv, bound_, rise, fall, belowBase, aboveBase), spoke);
+        (address impl, INavSourceMock vault) = _centrifugeImplementation(initialPrice);
+        return (_deploy(impl, lltv, bound_, rise, fall, belowBase, aboveBase), vault);
     }
 
     function _centrifugeImplementation(uint256 initialPrice) internal returns (address impl, INavSourceMock) {
         MockERC20 share = new MockERC20("Fund share", "SHARE", 6);
-        MockCentrifugeSpoke spoke = new MockCentrifugeSpoke(POOL_ID, SHARE_CLASS_ID, address(share));
-        spoke.setCurrentPrice(initialPrice);
-        impl = address(
-            new CentrifugeNavOracle(address(spoke), POOL_ID, SHARE_CLASS_ID, 7 days, address(usdc), address(share))
-        );
-        return (impl, spoke);
+        MockCentrifugeVault vault = new MockCentrifugeVault(address(share), address(usdc));
+        vault.setCurrentPrice(initialPrice);
+        impl = address(new CentrifugeNavOracle(address(vault), 7 days, address(usdc), address(share)));
+        return (impl, vault);
     }
 
     /// @dev The same bound both ways, the class's rates, floor and ceiling, and the working delay and window. The

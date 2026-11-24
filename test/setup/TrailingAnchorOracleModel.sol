@@ -325,8 +325,8 @@ library TrailingAnchorOracleModel {
         return "";
     }
 
-    /// @dev The revert a read of a Spoke source gives at `time`, or nothing: the source down, then a price stamped
-    ///      after `time`, then a price stamped more than `maxPriceAge` before it.
+    /// @dev The revert a read of a Centrifuge vault source gives at `time`, or nothing: the source down, then a
+    ///      price stamped after `time`, then a price stamped more than `maxPriceAge` before it.
     function sourceRevert(bool sourceDown, uint256 computedAt, uint256 maxPriceAge, uint256 time)
         internal
         pure
