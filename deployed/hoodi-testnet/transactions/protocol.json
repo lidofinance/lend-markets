@@ -149,7 +149,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x16ea3487e4b8ffb65cda87a03718288a30245b5f23cfc13412cedaf57c6d04c2",
+      "hash": "0xa51ca30154db3432f4adf07f82e8bf1dd7070a1b1d4a93a1ab238654d76e56e8",
       "transactionType": "CREATE",
       "contractName": "RiskStewardDashboard",
       "contractAddress": "0xc249abf58ac31ddeb3c715d7b395119aeef729d1",
@@ -171,7 +171,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xbe30b33d7eac2bece51bc07b1d8ea9c01272c50ede60affd014cb3f99b4cab61",
+      "hash": "0xd3c2badbd51d1cfaa82a957984d92865bc9f141cfa245c408b76b7e5f0eaa689",
       "transactionType": "CALL",
       "contractName": "RiskStewardDashboard",
       "contractAddress": "0xc249abf58ac31ddeb3c715d7b395119aeef729d1",
@@ -193,7 +193,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xd3c2badbd51d1cfaa82a957984d92865bc9f141cfa245c408b76b7e5f0eaa689",
+      "hash": "0x16ea3487e4b8ffb65cda87a03718288a30245b5f23cfc13412cedaf57c6d04c2",
       "transactionType": "CALL",
       "contractName": "RiskStewardDashboard",
       "contractAddress": "0xc249abf58ac31ddeb3c715d7b395119aeef729d1",
@@ -215,7 +215,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xa51ca30154db3432f4adf07f82e8bf1dd7070a1b1d4a93a1ab238654d76e56e8",
+      "hash": "0xbe30b33d7eac2bece51bc07b1d8ea9c01272c50ede60affd014cb3f99b4cab61",
       "transactionType": "CALL",
       "contractName": "RiskStewardDashboard",
       "contractAddress": "0xc249abf58ac31ddeb3c715d7b395119aeef729d1",
@@ -279,7 +279,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x57f385e42e08e64868a599465cf67f4afe6deb712760d01d40d5c618fba09096",
+      "hash": "0xae456c58fa22e02cb04f3c927af7e3ff74e593fe6660e413c2c4bbeccc5d1902",
       "transactionType": "CREATE",
       "contractName": "LidoLendMarketController",
       "contractAddress": "0x115c265127a60e32b8ebf235cae88289d4315156",
@@ -300,7 +300,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x52a6ca9adb9f49d21cecbb65a79d80175ee85e3a95696db9759d74e3372da766",
+      "hash": "0x9a3df545d3fdd8108fa82e599f7feaded277766dcc777a2e1577fc2c80a4e874",
       "transactionType": "CREATE",
       "contractName": "LidoLendERC4626",
       "contractAddress": "0x236a99c185c7f1edb1ffb0efd2aad20050a20ed7",
@@ -321,7 +321,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x2f41161aaf660138e2e9f67b5ab6874cd3f36d1f74bc73b6ee3d9cf24f9801a8",
+      "hash": "0xb45909579081f3efaae7b963d0f8a37069962457f2c235bf3c662290164261ee",
       "transactionType": "CREATE",
       "contractName": "GuardianSignals",
       "contractAddress": "0x57fc097f8235fd17343f66e1855af2ae96452553",
@@ -340,7 +340,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xf34ea3de3514d23dea7fc0c3b03cedd3e600395442120fb25c4d50bc9143f65e",
+      "hash": "0x059fc4275f85828aeeb071947f90bbe802b8c858630dd55b23645f3b62ce0f52",
       "transactionType": "CREATE",
       "contractName": "LidoLendMarketFactory",
       "contractAddress": "0x1ba98e8cb00dc00a00e41e10cc17692917aee896",
@@ -363,7 +363,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x7319f0a4c07510c2223ca881495b64dd6610ff9a5be6def4a62bad1e1b7cc0ab",
+      "hash": "0xa9696c796489aaa1c7d3839f175ea0bfdada1032bf31bd2bc3f06bfc182bafd5",
       "transactionType": "CALL",
       "contractName": "LidoLendOwner",
       "contractAddress": "0x5b2bde06288a5db7289c028fd4c8c175b5e3985b",
@@ -385,7 +385,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xea94fed997490fa069e2f6b9438edd56bb825c2c5dd194bad14ee7b5ae594123",
+      "hash": "0x41c993f5f6c3b686f14210af67c7dd9c556bd40b68e30f1a4b1a292791f99e32",
       "transactionType": "CALL",
       "contractName": "LidoLendOwner",
       "contractAddress": "0x5b2bde06288a5db7289c028fd4c8c175b5e3985b",
@@ -407,7 +407,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x049e8e661f925fcad133da8467116681da2fb1c1e3a8418d1b60fe7d52a246c3",
+      "hash": "0xa88c84dc08cda33e01b5f26250c630c27af8914c38910a2ed1362f97cd077f0d",
       "transactionType": "CALL",
       "contractName": "LidoLendOwner",
       "contractAddress": "0x5b2bde06288a5db7289c028fd4c8c175b5e3985b",
@@ -429,7 +429,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xa88c84dc08cda33e01b5f26250c630c27af8914c38910a2ed1362f97cd077f0d",
+      "hash": "0x2a914fc11b2d22b6f02df31cf13197c09f20ceff92aff6c766b8b2bee9ad2d09",
       "transactionType": "CALL",
       "contractName": "OssifiableProxy",
       "contractAddress": "0x88b624325385b3db69db73a65dadbaa15de4406d",
@@ -448,7 +448,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xdbcc3c743f673d6c7e3c8006d46c3b68759fbb3e8b6befc1844bfab2bfff1d20",
+      "hash": "0x5a2fd096f232b5c5e3650ddc28d7de8f7817bc265e3a336b1b1c421400c33bf7",
       "transactionType": "CALL",
       "contractName": "LidoLendOwner",
       "contractAddress": "0x5b2bde06288a5db7289c028fd4c8c175b5e3985b",
@@ -470,7 +470,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xc143edcf2aa0fdc5e96b037c745319f57210f25303923f3e429300274036356b",
+      "hash": "0x272c678905378c8540866a56a8b16aa3ec3a9e348d8120131f0f1e4de96c7f1e",
       "transactionType": "CALL",
       "contractName": "LidoLendOwner",
       "contractAddress": "0x5b2bde06288a5db7289c028fd4c8c175b5e3985b",
@@ -492,7 +492,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x2a914fc11b2d22b6f02df31cf13197c09f20ceff92aff6c766b8b2bee9ad2d09",
+      "hash": "0x3c84bd7d7802a89eef03b96f9067e949450885b1a1bcf338c5caa70a4189b623",
       "transactionType": "CALL",
       "contractName": "LidoLendOwner",
       "contractAddress": "0x5b2bde06288a5db7289c028fd4c8c175b5e3985b",
@@ -514,7 +514,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x41c993f5f6c3b686f14210af67c7dd9c556bd40b68e30f1a4b1a292791f99e32",
+      "hash": "0xd3bfaf17e91554a365ffa761b5871f73504d2d9d188358a82e42413d1c3f89c9",
       "transactionType": "CALL",
       "contractName": "OssifiableProxy",
       "contractAddress": "0x88b624325385b3db69db73a65dadbaa15de4406d",
@@ -533,7 +533,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x272c678905378c8540866a56a8b16aa3ec3a9e348d8120131f0f1e4de96c7f1e",
+      "hash": "0xdbcc3c743f673d6c7e3c8006d46c3b68759fbb3e8b6befc1844bfab2bfff1d20",
       "transactionType": "CALL",
       "contractName": "OssifiableProxy",
       "contractAddress": "0x78d3262e82a35d290507bcf9b4834735dda6b854",
@@ -554,7 +554,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xd7ab85f0bd88ce13969930a7fa81a6050134ca66e167622e08a30ded0d141bbf",
+      "hash": "0x5865b52d5b8665fdfa1093c0c307961b0021bfd22bdfd00f4bf95b801b90ac0c",
       "transactionType": "CALL",
       "contractName": "OssifiableProxy",
       "contractAddress": "0x88b624325385b3db69db73a65dadbaa15de4406d",
@@ -575,7 +575,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x086886b0088fbb748aa1d21782528ee3bb57b694d44f46af368d974dd5d7303a",
+      "hash": "0xcb5b34465632cb5cf94b2de344082f335256c0e7ad2558638f541256682e707a",
       "transactionType": "CREATE",
       "contractName": "MorphoExitBook",
       "contractAddress": "0xe626f019b04930fd0992a524fbe162695e99644d",
@@ -598,7 +598,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xbef485b4765ce236083f5bfd4b0a9fb7d48c0fd20eeecfa023612fa1cdeaaf2c",
+      "hash": "0x7319f0a4c07510c2223ca881495b64dd6610ff9a5be6def4a62bad1e1b7cc0ab",
       "transactionType": "CALL",
       "contractName": "MorphoExitBook",
       "contractAddress": "0xe626f019b04930fd0992a524fbe162695e99644d",
@@ -620,7 +620,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xd3bfaf17e91554a365ffa761b5871f73504d2d9d188358a82e42413d1c3f89c9",
+      "hash": "0xea94fed997490fa069e2f6b9438edd56bb825c2c5dd194bad14ee7b5ae594123",
       "transactionType": "CALL",
       "contractName": "MorphoExitBook",
       "contractAddress": "0xe626f019b04930fd0992a524fbe162695e99644d",
@@ -642,7 +642,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xa9696c796489aaa1c7d3839f175ea0bfdada1032bf31bd2bc3f06bfc182bafd5",
+      "hash": "0x2f41161aaf660138e2e9f67b5ab6874cd3f36d1f74bc73b6ee3d9cf24f9801a8",
       "transactionType": "CALL",
       "contractName": "MorphoExitBook",
       "contractAddress": "0xe626f019b04930fd0992a524fbe162695e99644d",
@@ -664,7 +664,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xe268005fc6cf92c7d79bb30da6518a29381218e99ae11516d43d76ed6ebdf3dd",
+      "hash": "0xbef485b4765ce236083f5bfd4b0a9fb7d48c0fd20eeecfa023612fa1cdeaaf2c",
       "transactionType": "CALL",
       "contractName": "MorphoExitBook",
       "contractAddress": "0xe626f019b04930fd0992a524fbe162695e99644d",
@@ -686,7 +686,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x3c84bd7d7802a89eef03b96f9067e949450885b1a1bcf338c5caa70a4189b623",
+      "hash": "0x086886b0088fbb748aa1d21782528ee3bb57b694d44f46af368d974dd5d7303a",
       "transactionType": "CALL",
       "contractName": "MorphoExitBook",
       "contractAddress": "0xe626f019b04930fd0992a524fbe162695e99644d",
@@ -708,7 +708,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x5427bf3f2dc72093e0a46606dd0d4dfb8f7d4389a387d7823f7bfd20295f32cc",
+      "hash": "0xc143edcf2aa0fdc5e96b037c745319f57210f25303923f3e429300274036356b",
       "transactionType": "CALL",
       "contractName": "MorphoExitBook",
       "contractAddress": "0xe626f019b04930fd0992a524fbe162695e99644d",
@@ -730,7 +730,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x5865b52d5b8665fdfa1093c0c307961b0021bfd22bdfd00f4bf95b801b90ac0c",
+      "hash": "0xe268005fc6cf92c7d79bb30da6518a29381218e99ae11516d43d76ed6ebdf3dd",
       "transactionType": "CALL",
       "contractName": "MorphoExitBook",
       "contractAddress": "0xe626f019b04930fd0992a524fbe162695e99644d",
@@ -752,7 +752,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x5a2fd096f232b5c5e3650ddc28d7de8f7817bc265e3a336b1b1c421400c33bf7",
+      "hash": "0x1c1a8f2ba8cf3af535dba2028361eee09c419847bd3a1fdca976e3e7bfd2cab8",
       "transactionType": "CREATE",
       "contractName": "Erc4626ExitBook",
       "contractAddress": "0xc0db4417ee3f4510fa60eabfefc0227e5a1cf127",
@@ -774,7 +774,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x1c1a8f2ba8cf3af535dba2028361eee09c419847bd3a1fdca976e3e7bfd2cab8",
+      "hash": "0x52a6ca9adb9f49d21cecbb65a79d80175ee85e3a95696db9759d74e3372da766",
       "transactionType": "CALL",
       "contractName": "Erc4626ExitBook",
       "contractAddress": "0xc0db4417ee3f4510fa60eabfefc0227e5a1cf127",
@@ -796,7 +796,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xb45909579081f3efaae7b963d0f8a37069962457f2c235bf3c662290164261ee",
+      "hash": "0x5427bf3f2dc72093e0a46606dd0d4dfb8f7d4389a387d7823f7bfd20295f32cc",
       "transactionType": "CALL",
       "contractName": "Erc4626ExitBook",
       "contractAddress": "0xc0db4417ee3f4510fa60eabfefc0227e5a1cf127",
@@ -818,7 +818,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xcb5b34465632cb5cf94b2de344082f335256c0e7ad2558638f541256682e707a",
+      "hash": "0xf34ea3de3514d23dea7fc0c3b03cedd3e600395442120fb25c4d50bc9143f65e",
       "transactionType": "CALL",
       "contractName": "Erc4626ExitBook",
       "contractAddress": "0xc0db4417ee3f4510fa60eabfefc0227e5a1cf127",
@@ -840,7 +840,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x229d6ca784eb76a6ff5c1196628739d272509241672000602981119d062cd327",
+      "hash": "0x049e8e661f925fcad133da8467116681da2fb1c1e3a8418d1b60fe7d52a246c3",
       "transactionType": "CALL",
       "contractName": "Erc4626ExitBook",
       "contractAddress": "0xc0db4417ee3f4510fa60eabfefc0227e5a1cf127",
@@ -862,7 +862,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xae456c58fa22e02cb04f3c927af7e3ff74e593fe6660e413c2c4bbeccc5d1902",
+      "hash": "0x229d6ca784eb76a6ff5c1196628739d272509241672000602981119d062cd327",
       "transactionType": "CALL",
       "contractName": "Erc4626ExitBook",
       "contractAddress": "0xc0db4417ee3f4510fa60eabfefc0227e5a1cf127",
@@ -884,7 +884,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x9a3df545d3fdd8108fa82e599f7feaded277766dcc777a2e1577fc2c80a4e874",
+      "hash": "0xd7ab85f0bd88ce13969930a7fa81a6050134ca66e167622e08a30ded0d141bbf",
       "transactionType": "CALL",
       "contractName": "Erc4626ExitBook",
       "contractAddress": "0xc0db4417ee3f4510fa60eabfefc0227e5a1cf127",
@@ -906,7 +906,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x059fc4275f85828aeeb071947f90bbe802b8c858630dd55b23645f3b62ce0f52",
+      "hash": "0x57f385e42e08e64868a599465cf67f4afe6deb712760d01d40d5c618fba09096",
       "transactionType": "CALL",
       "contractName": "Erc4626ExitBook",
       "contractAddress": "0xc0db4417ee3f4510fa60eabfefc0227e5a1cf127",
