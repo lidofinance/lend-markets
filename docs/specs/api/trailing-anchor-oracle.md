@@ -489,7 +489,7 @@ error MaxPriceAgeIsZero();
 #### `StalePrice`
 
 ```solidity
-error StalePrice(uint64 computedAt);
+error StalePrice(uint256 computedAt);
 ```
 
 The vault's price stamp `computedAt` is more than `MAX_PRICE_AGE` ago.
@@ -497,7 +497,7 @@ The vault's price stamp `computedAt` is more than `MAX_PRICE_AGE` ago.
 #### `PriceFromFuture`
 
 ```solidity
-error PriceFromFuture(uint64 computedAt);
+error PriceFromFuture(uint256 computedAt);
 ```
 
 The vault's price stamp `computedAt` is after the block time.
@@ -521,3 +521,72 @@ constructor(
 | --- | --- | --- |
 | `VAULT` | `ICentrifugeVault` (immutable) | Centrifuge vault of the collateral token. |
 | `MAX_PRICE_AGE` | `uint256` (immutable) | Largest age of the vault's price stamp that the adapter accepts, in seconds. |
+
+## ChainlinkNavOracle
+
+NAV oracle that reads the collateral's price from a feed with Chainlink's aggregator interface.
+
+The feed's `updatedAt` is when the feed wrote the value, not when the issuer computed it. The adapter refuses a value older than `MAX_PRICE_AGE` and one written after the block time.
+
+### Errors
+
+#### `MaxPriceAgeIsZero`
+
+```solidity
+error MaxPriceAgeIsZero();
+```
+
+`maxPriceAge` is zero.
+
+#### `UnsupportedFeedDecimals`
+
+```solidity
+error UnsupportedFeedDecimals(uint8 feedDecimals);
+```
+
+The feed has more decimals than `PRICE_DECIMALS`.
+
+#### `NegativePrice`
+
+```solidity
+error NegativePrice(int256 answer);
+```
+
+The feed's value is below zero.
+
+#### `StalePrice`
+
+```solidity
+error StalePrice(uint256 updatedAt);
+```
+
+The feed wrote its value at `updatedAt`, which is more than `MAX_PRICE_AGE` ago.
+
+#### `PriceFromFuture`
+
+```solidity
+error PriceFromFuture(uint256 updatedAt);
+```
+
+The feed gives its value the time `updatedAt`, which is after the block time.
+
+### Functions
+
+#### `constructor`
+
+```solidity
+constructor(
+    address feed,
+    uint256 maxPriceAge,
+    address loanToken,
+    address collateralToken
+);
+```
+
+### State variables
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `FEED` | `IChainlinkFeed` (immutable) | Feed of the collateral's price in the loan token's currency. |
+| `MAX_PRICE_AGE` | `uint256` (immutable) | Largest age of a feed value that the adapter returns, in seconds since the feed wrote it. |
+| `ANSWER_SCALE` | `uint256` (immutable) | Factor from the feed's decimals to `PRICE_DECIMALS`. |

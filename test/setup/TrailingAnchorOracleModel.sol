@@ -325,8 +325,9 @@ library TrailingAnchorOracleModel {
         return "";
     }
 
-    /// @dev The revert a read of a Centrifuge vault source gives at `time`, or nothing: the source down, then a
-    ///      price stamped after `time`, then a price stamped more than `maxPriceAge` before it.
+    /// @dev The revert a read of a stamped source gives at `time`, or nothing: the source down, then a price stamped
+    ///      after `time`, then a price stamped more than `maxPriceAge` before it. `ChainlinkNavOracle`'s two stamp
+    ///      errors have the signatures of `CentrifugeNavOracle`'s, so these encodings serve both adapters.
     function sourceRevert(bool sourceDown, uint256 computedAt, uint256 maxPriceAge, uint256 time)
         internal
         pure
@@ -334,10 +335,10 @@ library TrailingAnchorOracleModel {
     {
         if (sourceDown) return abi.encodeWithSelector(SourceDown.selector);
         if (computedAt > time) {
-            return abi.encodeWithSelector(CentrifugeNavOracle.PriceFromFuture.selector, uint64(computedAt));
+            return abi.encodeWithSelector(CentrifugeNavOracle.PriceFromFuture.selector, computedAt);
         }
         if (time - computedAt > maxPriceAge) {
-            return abi.encodeWithSelector(CentrifugeNavOracle.StalePrice.selector, uint64(computedAt));
+            return abi.encodeWithSelector(CentrifugeNavOracle.StalePrice.selector, computedAt);
         }
         return "";
     }

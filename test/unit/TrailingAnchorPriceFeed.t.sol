@@ -4,6 +4,7 @@ pragma solidity 0.8.36;
 import {Test} from "forge-std/Test.sol";
 
 import {CentrifugeNavOracle} from "../../src/oracle/CentrifugeNavOracle.sol";
+import {ChainlinkNavOracle} from "../../src/oracle/ChainlinkNavOracle.sol";
 import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 import {UsdyNavOracle} from "../../src/oracle/UsdyNavOracle.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
@@ -11,7 +12,7 @@ import {TrailingAnchorKind, TrailingAnchorPriceFeedSpec} from "../../script/depl
 import {TrailingAnchorPriceFeed} from "../../script/deployment/TrailingAnchorPriceFeed.sol";
 
 import {MockERC20} from "../setup/Mocks.sol";
-import {MockCentrifugeVault, MockOndoPriceGetter} from "../setup/NavSourceMocks.sol";
+import {MockCentrifugeVault, MockChainlinkFeed, MockOndoPriceGetter} from "../setup/NavSourceMocks.sol";
 import {TrailingAnchorOracleModel} from "../setup/TrailingAnchorOracleModel.sol";
 
 /// @dev External entry points, so that a test can expect a revert of the library.
@@ -63,6 +64,14 @@ contract TrailingAnchorPriceFeedTest is Test {
     function test_kindName_namesEachKind() external pure {
         assertEq(TrailingAnchorPriceFeed.kindName(TrailingAnchorKind.Usdy), "usdy-nav", "Usdy");
         assertEq(TrailingAnchorPriceFeed.kindName(TrailingAnchorKind.Centrifuge), "centrifuge-nav", "Centrifuge");
+        assertEq(TrailingAnchorPriceFeed.kindName(TrailingAnchorKind.Chainlink), "chainlink-nav", "Chainlink");
+    }
+
+    /// @dev The kinds keep their values: a new kind is appended, never inserted.
+    function test_kind_valuesArePinned() external pure {
+        assertEq(uint8(TrailingAnchorKind.Usdy), 0, "Usdy");
+        assertEq(uint8(TrailingAnchorKind.Centrifuge), 1, "Centrifuge");
+        assertEq(uint8(TrailingAnchorKind.Chainlink), 2, "Chainlink");
     }
 
     /// @dev The Usdy adapter reads the spec's source, and its scale comes from the 6- and 18-decimal tokens.
@@ -84,6 +93,20 @@ contract TrailingAnchorPriceFeedTest is Test {
         assertEq(address(adapter.VAULT()), address(vault), "VAULT");
         assertEq(adapter.MAX_PRICE_AGE(), 3 days, "MAX_PRICE_AGE");
         assertEq(adapter.PRICE_SCALE(), 1e18, "PRICE_SCALE");
+    }
+
+    /// @dev The Chainlink adapter reads the spec's source as its feed and takes the spec's `maxPriceAge`.
+    function test_implementation_buildsTheChainlinkAdapter() external {
+        MockChainlinkFeed feed = new MockChainlinkFeed(6);
+        TrailingAnchorPriceFeedSpec memory s = spec;
+        s.kind = TrailingAnchorKind.Chainlink;
+        s.source = address(feed);
+        s.maxPriceAge = 2 days;
+        ChainlinkNavOracle adapter = ChainlinkNavOracle(harness.implementation(s));
+        assertEq(address(adapter.FEED()), address(feed), "FEED");
+        assertEq(adapter.MAX_PRICE_AGE(), 2 days, "MAX_PRICE_AGE");
+        assertEq(adapter.ANSWER_SCALE(), 1e12, "ANSWER_SCALE");
+        assertEq(adapter.PRICE_SCALE(), 1e6, "PRICE_SCALE");
     }
 
     /// @dev The build runs the adapter's own share token check, so a spec whose collateral is not the share token of

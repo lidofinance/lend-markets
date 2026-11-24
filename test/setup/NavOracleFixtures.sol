@@ -4,12 +4,13 @@ pragma solidity 0.8.36;
 import {Test} from "forge-std/Test.sol";
 
 import {CentrifugeNavOracle} from "../../src/oracle/CentrifugeNavOracle.sol";
+import {ChainlinkNavOracle} from "../../src/oracle/ChainlinkNavOracle.sol";
 import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 import {UsdyNavOracle} from "../../src/oracle/UsdyNavOracle.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 import {MockERC20} from "./Mocks.sol";
-import {INavSourceMock, MockCentrifugeVault, MockOndoPriceGetter} from "./NavSourceMocks.sol";
+import {INavSourceMock, MockCentrifugeVault, MockChainlinkFeed, MockOndoPriceGetter} from "./NavSourceMocks.sol";
 
 /// @notice One NAV adapter over its source mock, for suites that run the same anchor rules through every adapter. A
 ///         concrete suite mixes in exactly one of the fixtures below.
@@ -71,5 +72,24 @@ abstract contract CentrifugeNavOracleFixture is NavOracleFixture {
 
     function _namespace() internal pure override returns (string memory) {
         return "lido.lend.storage.CentrifugeNavOracle";
+    }
+}
+
+/// @notice `ChainlinkNavOracle` over an 18-decimal feed, for an 18-decimal collateral like deJTRSY. With 18 decimals
+///         the feed's answer is the price a suite sets, exactly.
+abstract contract ChainlinkNavOracleFixture is NavOracleFixture {
+    uint256 internal constant MAX_PRICE_AGE = 2 days;
+
+    function _setUpSource() internal override {
+        collateralToken = address(new MockERC20("JTRSY deRWA", "deJTRSY", 18));
+        source = new MockChainlinkFeed(18);
+    }
+
+    function _newImplementation(address loanToken) internal override returns (address) {
+        return address(new ChainlinkNavOracle(address(source), MAX_PRICE_AGE, loanToken, collateralToken));
+    }
+
+    function _namespace() internal pure override returns (string memory) {
+        return "lido.lend.storage.ChainlinkNavOracle";
     }
 }

@@ -11,7 +11,7 @@ import {
     TrailingAnchorOracleState,
     TrailingAnchorOracleUpdate
 } from "../../setup/TrailingAnchorOracleModel.sol";
-import {INavSourceMock, MockCentrifugeVault} from "../../setup/NavSourceMocks.sol";
+import {INavSourceMock, IStampedSourceMock} from "../../setup/NavSourceMocks.sol";
 
 /// @notice Drives one anchor oracle through every state-changing entry point: the source and time move, anyone calls
 ///         `updateAnchor()`, the price acceptor accepts prices in a range, and the manager changes the parameters and
@@ -39,7 +39,7 @@ contract TrailingAnchorOracleHandler is Test {
     ///      18-decimal price. The lower bound is the one value rounded down toward a lower price, by under 1 wei. The
     ///      floor rounds up, the ceiling and the upper bound round down, and the sizing rule rounds against itself.
     uint256 internal immutable ROUNDING;
-    /// @dev The adapter's `MAX_PRICE_AGE` when the source is a Centrifuge vault that stamps its price, zero otherwise.
+    /// @dev The adapter's `MAX_PRICE_AGE` when the source stamps its price, zero otherwise.
     uint256 internal immutable MAX_PRICE_AGE;
 
     TrailingAnchorOracleState internal shadow;
@@ -150,12 +150,12 @@ contract TrailingAnchorOracleHandler is Test {
         SOURCE.setDown(_pick(seed, "down") % 8 == 0);
     }
 
-    /// @dev A Centrifuge vault source only: restamps the price. On one pick in eight the stamp is up to two days past
+    /// @dev A stamped source only: restamps the price. On one pick in eight the stamp is up to two days past
     ///      `MAX_PRICE_AGE`, on one it is up to an hour after the block, on one exactly `MAX_PRICE_AGE` old and on one
     ///      a second older. Otherwise it is at most `MAX_PRICE_AGE` old. The age stays the same while time passes.
     function setPriceStamp(uint256 seed) external observed {
         if (MAX_PRICE_AGE == 0) return;
-        MockCentrifugeVault vault = MockCentrifugeVault(address(SOURCE));
+        IStampedSourceMock stamped = IStampedSourceMock(address(SOURCE));
         uint256 pick = _pick(seed, "stamp");
         uint256 kind = pick % 8;
         uint256 age = bound(pick >> 8, 0, MAX_PRICE_AGE);
@@ -163,8 +163,8 @@ contract TrailingAnchorOracleHandler is Test {
         else if (kind == 1) age = 0;
         else if (kind == 2) age = MAX_PRICE_AGE;
         else if (kind == 3) age = MAX_PRICE_AGE + 1;
-        vault.setPriceAhead(kind == 1 ? bound(pick >> 8, 1, 1 hours) : 0);
-        vault.setPriceAge(age);
+        stamped.setPriceAhead(kind == 1 ? bound(pick >> 8, 1, 1 hours) : 0);
+        stamped.setPriceAge(age);
     }
 
     /// @dev Up to three days at once.
@@ -249,13 +249,13 @@ contract TrailingAnchorOracleHandler is Test {
     }
 
     /// @dev Counts an update the price stamp refused: a stamp after the block, a stale stamp, and a stale stamp while a
-    ///      pending anchor's window has closed. The stamp is the block time plus the vault's offset minus its age.
+    ///      pending anchor's window has closed. The stamp is the block time plus the source's offset minus its age.
     function _countStampRefusal(TrailingAnchorOracleState memory s) internal {
         if (MAX_PRICE_AGE == 0 || SOURCE.isDown()) return;
-        MockCentrifugeVault vault = MockCentrifugeVault(address(SOURCE));
-        if (vault.priceAhead() > vault.priceAge()) {
+        IStampedSourceMock stamped = IStampedSourceMock(address(SOURCE));
+        if (stamped.priceAhead() > stamped.priceAge()) {
             ++refused["future"];
-        } else if (vault.priceAge() - vault.priceAhead() > MAX_PRICE_AGE) {
+        } else if (stamped.priceAge() - stamped.priceAhead() > MAX_PRICE_AGE) {
             ++refused["stale"];
             if (s.pendingAnchorAt != 0 && block.timestamp > s.closesAt()) ++refused["expiredWhileStale"];
         }
@@ -455,13 +455,13 @@ contract TrailingAnchorOracleHandler is Test {
         return address(uint160(uint256(keccak256(abi.encode("caller", seed)))));
     }
 
-    /// @dev The revert a read of the source gives now, or nothing. A vault stamps its price at the block time plus its
-    ///      offset minus its age.
+    /// @dev The revert a read of the source gives now, or nothing. A stamped source stamps its price at the block time
+    ///      plus its offset minus its age.
     function _sourceRevert() internal view returns (bytes memory) {
         if (MAX_PRICE_AGE == 0) return TrailingAnchorOracleModel.sourceRevert(SOURCE.isDown());
-        MockCentrifugeVault vault = MockCentrifugeVault(address(SOURCE));
+        IStampedSourceMock stamped = IStampedSourceMock(address(SOURCE));
         return TrailingAnchorOracleModel.sourceRevert(
-            SOURCE.isDown(), block.timestamp + vault.priceAhead() - vault.priceAge(), MAX_PRICE_AGE, block.timestamp
+            SOURCE.isDown(), block.timestamp + stamped.priceAhead() - stamped.priceAge(), MAX_PRICE_AGE, block.timestamp
         );
     }
 

@@ -79,7 +79,7 @@ contract CentrifugeNavOracleTest is Test {
         vault.setPriceAge(MAX_PRICE_AGE);
         assertEq(oracle.price(), uint256(JTRSY_PRICE) * 1e18, "a price on the edge");
         vault.setPriceAge(MAX_PRICE_AGE + 1);
-        uint64 computedAt = uint64(block.timestamp - MAX_PRICE_AGE - 1);
+        uint256 computedAt = block.timestamp - MAX_PRICE_AGE - 1;
         vm.expectRevert(abi.encodeWithSelector(CentrifugeNavOracle.StalePrice.selector, computedAt));
         oracle.price();
         vm.expectRevert(abi.encodeWithSelector(CentrifugeNavOracle.StalePrice.selector, computedAt));
@@ -92,7 +92,7 @@ contract CentrifugeNavOracleTest is Test {
         CentrifugeNavOracle oracle = _deploy(6);
         assertEq(oracle.price(), uint256(JTRSY_PRICE) * 1e18, "a price stamped at the block time");
         vault.setPriceAhead(1);
-        uint64 computedAt = uint64(block.timestamp + 1);
+        uint256 computedAt = block.timestamp + 1;
         vm.expectRevert(abi.encodeWithSelector(CentrifugeNavOracle.PriceFromFuture.selector, computedAt));
         oracle.price();
         vm.expectRevert(abi.encodeWithSelector(CentrifugeNavOracle.PriceFromFuture.selector, computedAt));
@@ -106,9 +106,8 @@ contract CentrifugeNavOracleTest is Test {
         bytes32 acceptorRole = oracle.PRICE_ACCEPTOR_ROLE();
         oracle.grantRole(acceptorRole, address(this));
         vault.setPriceAge(MAX_PRICE_AGE + 1);
-        bytes memory stale = abi.encodeWithSelector(
-            CentrifugeNavOracle.StalePrice.selector, uint64(block.timestamp - MAX_PRICE_AGE - 1)
-        );
+        bytes memory stale =
+            abi.encodeWithSelector(CentrifugeNavOracle.StalePrice.selector, block.timestamp - MAX_PRICE_AGE - 1);
         vm.expectRevert(stale);
         oracle.acceptPrice(0, type(uint256).max);
 

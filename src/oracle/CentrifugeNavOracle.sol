@@ -46,9 +46,9 @@ contract CentrifugeNavOracle layout at erc7201("lido.lend.storage.CentrifugeNavO
     /// @notice `maxPriceAge` is zero.
     error MaxPriceAgeIsZero();
     /// @notice The vault's price stamp `computedAt` is more than `MAX_PRICE_AGE` ago.
-    error StalePrice(uint64 computedAt);
+    error StalePrice(uint256 computedAt);
     /// @notice The vault's price stamp `computedAt` is after the block time.
-    error PriceFromFuture(uint64 computedAt);
+    error PriceFromFuture(uint256 computedAt);
 
     // ---
     // CONSTRUCTOR

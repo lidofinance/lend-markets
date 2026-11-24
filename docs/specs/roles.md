@@ -164,7 +164,7 @@ Delisting one source affects only new requests for that source. Pausing affects 
 
 ### Trailing Anchor Oracle
 
-`UsdyNavOracle` and `CentrifugeNavOracle` each sit behind their own `OssifiableProxy`, and one oracle may serve several markets. The price check these roles act on is specified in [Trailing Anchor Oracle](trailing-anchor-oracle.md).
+`UsdyNavOracle`, `CentrifugeNavOracle` and `ChainlinkNavOracle` each sit behind their own `OssifiableProxy`, and one oracle may serve several markets. The price check these roles act on is specified in [Trailing Anchor Oracle](trailing-anchor-oracle.md).
 
 | Authority | Powers | Class | Initial onchain holder |
 |---|---|---|---|
