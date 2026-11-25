@@ -9,7 +9,7 @@ Easy Track motion. This repository does not deploy Easy Track or its executor.
 - `ProtocolDeployment` / `ProtocolDeployer`: protocol backbone and a new or reused CircuitBreaker.
 - `MarketDeployment`: market creation, price-feed proxy deployment/validation and address output.
 - `WethWstethMarket` at the start of `mainnet/DeployWethWsteth.s.sol`: shared WETH/wstETH parameters and price-feed functions.
-- `TrailingAnchorMarket`: the recipe for a market over a trailing anchor oracle (`UsdyNavOracle` or `CentrifugeNavOracle`). `TrailingAnchorPriceFeed` holds its oracle checks, which acceptance also runs.
+- `TrailingAnchorMarket`: the recipe for a market over a trailing anchor oracle (`UsdyNavOracle`, `CentrifugeNavOracle` or `ChainlinkOracle`). `TrailingAnchorPriceFeed` holds its oracle checks, which acceptance also runs.
 - `ProtocolDeployer._deployExitBooks`: independent exit-book deployment.
 - `PeripheryDeployment`: bundler and Vault V2 helpers.
 
@@ -46,8 +46,8 @@ A new or reused oracle must be the spec's adapter behind an Agent-administered p
 Agent as the only holder of each role, the sizing rule kept at the market's LLTV, the anchor between the floor and the
 ceiling, and a price that `price()` returns. To reuse an oracle after `setParameters`, put the reviewed live parameters
 in the spec. After a later role change, the recipe refuses each new market on that oracle, since the spec has no input
-for other role holders. The market's record keeps the spec in `priceFeed.trailingAnchor`, with `priceFeedKind` `usdy-nav` or
-`centrifuge-nav`. The fork helpers do not know these kinds yet: preparing a run that records such a market fails, and
+for other role holders. The market's record keeps the spec in `priceFeed.trailingAnchor`, with `priceFeedKind` `usdy-nav`,
+`centrifuge-nav` or `chainlink`. The fork helpers do not know these kinds yet: preparing a run that records such a market fails, and
 a fork suite cannot bind it.
 
 ## Simulate and broadcast

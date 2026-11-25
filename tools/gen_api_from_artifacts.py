@@ -416,6 +416,7 @@ NAV_ORACLE_BASE = "TrailingAnchorOracleBase.sol/TrailingAnchorOracleBase.json"
 NAV_ORACLE_ADAPTERS = (
     ("UsdyNavOracle.sol/UsdyNavOracle.json", "UsdyNavOracle"),
     ("CentrifugeNavOracle.sol/CentrifugeNavOracle.json", "CentrifugeNavOracle"),
+    ("ChainlinkOracle.sol/ChainlinkOracle.json", "ChainlinkOracle"),
 )
 EXIT_BOOK_BASE = "IExitBook.sol/IExitBook.json"
 EXIT_BOOK_4626 = "IErc4626ExitBook.sol/IErc4626ExitBook.json"

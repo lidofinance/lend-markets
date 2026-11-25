@@ -9,7 +9,12 @@ import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 import {TrailingAnchorOracleModel, TrailingAnchorOracleState} from "../setup/TrailingAnchorOracleModel.sol";
 import {MockERC20} from "../setup/Mocks.sol";
-import {CentrifugeNavOracleFixture, NavOracleFixture, UsdyNavOracleFixture} from "../setup/NavOracleFixtures.sol";
+import {
+    CentrifugeNavOracleFixture,
+    ChainlinkOracleFixture,
+    NavOracleFixture,
+    UsdyNavOracleFixture
+} from "../setup/NavOracleFixtures.sol";
 
 import {TrailingAnchorOracleHandler} from "./handlers/TrailingAnchorOracleHandler.sol";
 
@@ -54,7 +59,7 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
 
         // Weighted: source moves, window edges, updates, the keeper's hour and a source settling at its pending anchor
         // appear more than once, since a pending anchor needs a price outside the bounds and a re-anchor needs its
-        // window. A Spoke source also restamps its price.
+        // window. A stamped source also restamps its price.
         bytes4[] memory selectors = new bytes4[](_maxPriceAge() == 0 ? 19 : 20);
         selectors[0] = TrailingAnchorOracleHandler.stepSource.selector;
         selectors[1] = TrailingAnchorOracleHandler.stepSource.selector;
@@ -298,15 +303,9 @@ abstract contract TrailingAnchorOracleInvariantTest is NavOracleFixture {
 /// forge-config: default.invariant.depth = 128
 contract TrailingAnchorOracleUsdyInvariant is TrailingAnchorOracleInvariantTest, UsdyNavOracleFixture {}
 
-/// forge-config: default.invariant.fail-on-revert = true
-/// forge-config: default.invariant.runs = 256
-/// forge-config: default.invariant.depth = 128
-contract TrailingAnchorOracleCentrifugeInvariant is TrailingAnchorOracleInvariantTest, CentrifugeNavOracleFixture {
-    function _maxPriceAge() internal pure override returns (uint256) {
-        return MAX_PRICE_AGE;
-    }
-
-    /// @dev The stamp action reaches each refusal of the Spoke's stamp: a pending anchor whose window closes while the
+/// @notice The campaign over a source that stamps its price, with the stamp action.
+abstract contract TrailingAnchorOracleStampedInvariantTest is TrailingAnchorOracleInvariantTest {
+    /// @dev The stamp action reaches each refusal of the source's stamp: a pending anchor whose window closes while the
     ///      price is stale, and a price stamped after the block. A fresh stamp then records a new pending anchor.
     function test_stampCases_areReachable() public {
         handler.moveSource(0);
@@ -329,6 +328,27 @@ contract TrailingAnchorOracleCentrifugeInvariant is TrailingAnchorOracleInvarian
     /// @dev A seed whose stamp pick is `kind`: 0 stale, 1 after the block, 4 fresh.
     function _stampSeed(uint256 kind) internal pure returns (uint256 seed) {
         while (uint256(keccak256(abi.encode(seed, "stamp"))) % 8 != kind) ++seed;
+    }
+}
+
+/// forge-config: default.invariant.fail-on-revert = true
+/// forge-config: default.invariant.runs = 256
+/// forge-config: default.invariant.depth = 128
+contract TrailingAnchorOracleCentrifugeInvariant is
+    TrailingAnchorOracleStampedInvariantTest,
+    CentrifugeNavOracleFixture
+{
+    function _maxPriceAge() internal pure override returns (uint256) {
+        return MAX_PRICE_AGE;
+    }
+}
+
+/// forge-config: default.invariant.fail-on-revert = true
+/// forge-config: default.invariant.runs = 256
+/// forge-config: default.invariant.depth = 128
+contract TrailingAnchorOracleChainlinkInvariant is TrailingAnchorOracleStampedInvariantTest, ChainlinkOracleFixture {
+    function _maxPriceAge() internal pure override returns (uint256) {
+        return MAX_PRICE_AGE;
     }
 }
 

@@ -88,17 +88,17 @@ struct ProtocolParameters {
 /// @dev The adapter of a trailing anchor oracle.
 enum TrailingAnchorKind {
     Usdy,
-    Centrifuge
+    Centrifuge,
+    Chainlink
 }
 
 /// @dev A trailing anchor oracle of a market: the adapter and its source, the market's tokens, the parameters at
-///      launch and the range that the seed price must be in. `poolId`, `shareClassId` and `maxPriceAge` are for the
-///      Centrifuge adapter.
+///      launch and the range that the seed price must be in. For the Centrifuge adapter, `source` is the vault of the
+///      collateral token, and `maxPriceAge` is the age of the share price; for the Chainlink adapter, `source` is the
+///      feed, and `maxPriceAge` is the age of the feed's value.
 struct TrailingAnchorPriceFeedSpec {
     TrailingAnchorKind kind;
     address source;
-    uint64 poolId;
-    bytes16 shareClassId;
     uint256 maxPriceAge;
     address loanToken;
     address collateralToken;

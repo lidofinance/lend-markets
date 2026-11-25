@@ -456,9 +456,9 @@ constructor(address source, address loanToken, address collateralToken);
 
 ## CentrifugeNavOracle
 
-NAV oracle for a Centrifuge share class. It reads the share price from the Centrifuge Spoke.
+NAV oracle for a Centrifuge share class. It reads the share price in the loan token from the share class's Centrifuge vault, whose asset is the loan token.
 
-The adapter does not use the validity check of the Spoke, because a pool can set an unbounded maximum age. The adapter refuses a price older than its own `MAX_PRICE_AGE`. The issuer supplies the time of the price, so the adapter also refuses a time after the block time.
+The vault's time stamp is the later of the share price's and the asset price's. The adapter refuses a stamp older than its own `MAX_PRICE_AGE`. The issuer supplies the stamp, so the adapter also refuses one after the block time.
 
 ### Errors
 
@@ -468,7 +468,15 @@ The adapter does not use the validity check of the Spoke, because a pool can set
 error ShareTokenMismatch(address shareToken, address collateralToken);
 ```
 
-The token of the share class on the Spoke is not the collateral token.
+The share token of the vault is not the collateral token.
+
+#### `AssetMismatch`
+
+```solidity
+error AssetMismatch(address asset, address loanToken);
+```
+
+The asset of the vault is not the loan token.
 
 #### `MaxPriceAgeIsZero`
 
@@ -481,18 +489,18 @@ error MaxPriceAgeIsZero();
 #### `StalePrice`
 
 ```solidity
-error StalePrice(uint64 computedAt);
+error StalePrice(uint256 computedAt);
 ```
 
-The Spoke computed the share price at `computedAt`, which is more than `MAX_PRICE_AGE` ago.
+The vault's price stamp `computedAt` is more than `MAX_PRICE_AGE` ago.
 
 #### `PriceFromFuture`
 
 ```solidity
-error PriceFromFuture(uint64 computedAt);
+error PriceFromFuture(uint256 computedAt);
 ```
 
-The Spoke gives the share price the time `computedAt`, which is after the block time.
+The vault's price stamp `computedAt` is after the block time.
 
 ### Functions
 
@@ -500,9 +508,7 @@ The Spoke gives the share price the time `computedAt`, which is after the block 
 
 ```solidity
 constructor(
-    address spoke,
-    uint64 poolId,
-    bytes16 scId,
+    address vault,
     uint256 maxPriceAge,
     address loanToken,
     address collateralToken
@@ -513,7 +519,74 @@ constructor(
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `SPOKE` | `ICentrifugeSpoke` (immutable) | Centrifuge Spoke that holds the share prices. |
-| `POOL_ID` | `uint64` (immutable) | Pool of the collateral token. |
-| `SHARE_CLASS_ID` | `bytes16` (immutable) | Share class of the collateral token. |
-| `MAX_PRICE_AGE` | `uint256` (immutable) | Largest age of a share price that the adapter returns, in seconds since the Spoke computed it. |
+| `VAULT` | `ICentrifugeVault` (immutable) | Centrifuge vault of the collateral token. |
+| `MAX_PRICE_AGE` | `uint256` (immutable) | Largest age of the vault's price stamp that the adapter accepts, in seconds. |
+
+## ChainlinkOracle
+
+Oracle that reads the collateral's price from a feed with Chainlink's aggregator interface.
+
+The feed's `updatedAt` is when the feed wrote the value, not when the issuer computed it. The adapter refuses a value older than `MAX_PRICE_AGE` and one written after the block time.
+
+### Errors
+
+#### `MaxPriceAgeIsZero`
+
+```solidity
+error MaxPriceAgeIsZero();
+```
+
+`maxPriceAge` is zero.
+
+#### `UnsupportedFeedDecimals`
+
+```solidity
+error UnsupportedFeedDecimals(uint8 feedDecimals);
+```
+
+The feed has more decimals than `PRICE_DECIMALS`.
+
+#### `NegativePrice`
+
+```solidity
+error NegativePrice(int256 answer);
+```
+
+The feed's value is below zero.
+
+#### `StalePrice`
+
+```solidity
+error StalePrice(uint256 updatedAt);
+```
+
+The feed wrote its value at `updatedAt`, which is more than `MAX_PRICE_AGE` ago.
+
+#### `PriceFromFuture`
+
+```solidity
+error PriceFromFuture(uint256 updatedAt);
+```
+
+The feed gives its value the time `updatedAt`, which is after the block time.
+
+### Functions
+
+#### `constructor`
+
+```solidity
+constructor(
+    address feed,
+    uint256 maxPriceAge,
+    address loanToken,
+    address collateralToken
+);
+```
+
+### State variables
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `FEED` | `IChainlinkFeed` (immutable) | Feed of the collateral's price in the loan token's currency. |
+| `MAX_PRICE_AGE` | `uint256` (immutable) | Largest age of a feed value that the adapter returns, in seconds since the feed wrote it. |
+| `ANSWER_SCALE` | `uint256` (immutable) | Factor from the feed's decimals to `PRICE_DECIMALS`. |

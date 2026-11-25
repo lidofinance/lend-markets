@@ -20,7 +20,12 @@ import {
 } from "../setup/TrailingAnchorOracleModel.sol";
 import {IOssifiableProxy} from "../setup/IOssifiableProxy.sol";
 import {MockERC20} from "../setup/Mocks.sol";
-import {CentrifugeNavOracleFixture, NavOracleFixture, UsdyNavOracleFixture} from "../setup/NavOracleFixtures.sol";
+import {
+    CentrifugeNavOracleFixture,
+    ChainlinkOracleFixture,
+    NavOracleFixture,
+    UsdyNavOracleFixture
+} from "../setup/NavOracleFixtures.sol";
 import {MockOndoPriceGetter, SourceDown} from "../setup/NavSourceMocks.sol";
 
 /// @notice `TrailingAnchorOracleBase` method by method, run once through each adapter over its source mock.
@@ -1811,6 +1816,8 @@ contract TrailingAnchorOracleBaseUsdyTest is TrailingAnchorOracleBaseTest, UsdyN
 }
 
 contract TrailingAnchorOracleBaseCentrifugeTest is TrailingAnchorOracleBaseTest, CentrifugeNavOracleFixture {}
+
+contract TrailingAnchorOracleBaseChainlinkTest is TrailingAnchorOracleBaseTest, ChainlinkOracleFixture {}
 
 /// @notice An upgrade behind one proxy to a new version of the same adapter keeps the state.
 contract TrailingAnchorOracleUpgradeTest is Test {

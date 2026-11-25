@@ -22,7 +22,7 @@ import {TrailingAnchorPriceFeed} from "../../script/deployment/TrailingAnchorPri
 
 import {IOssifiableProxy} from "../setup/IOssifiableProxy.sol";
 import {MockERC20} from "../setup/Mocks.sol";
-import {MockCentrifugeSpoke, MockOndoPriceGetter} from "../setup/NavSourceMocks.sol";
+import {MockCentrifugeVault, MockOndoPriceGetter} from "../setup/NavSourceMocks.sol";
 import {TrailingAnchorMarketFixture, TrailingAnchorMarketHarness} from "../setup/TrailingAnchorMarketFixture.sol";
 import {TrailingAnchorOracleModel} from "../setup/TrailingAnchorOracleModel.sol";
 
@@ -92,16 +92,12 @@ contract TrailingAnchorMarketTest is Test {
 
     /// @dev A Centrifuge spec deploys the Centrifuge adapter, each of its fields in its own immutable.
     function test_deployTrailingAnchorMarket_deploysTheCentrifugeAdapter() external {
-        uint64 poolId = 281474976710662;
-        bytes16 shareClassId = 0x00010000000000060000000000000001;
         MockERC20 share = new MockERC20("JTRSY", "JTRSY", 6);
-        MockCentrifugeSpoke spoke = new MockCentrifugeSpoke(poolId, shareClassId, address(share));
-        spoke.setCurrentPrice(SEED_PRICE);
+        MockCentrifugeVault vault = new MockCentrifugeVault(address(share), spec.loanToken);
+        vault.setCurrentPrice(SEED_PRICE);
         TrailingAnchorPriceFeedSpec memory s = spec;
         s.kind = TrailingAnchorKind.Centrifuge;
-        s.source = address(spoke);
-        s.poolId = poolId;
-        s.shareClassId = shareClassId;
+        s.source = address(vault);
         s.maxPriceAge = 3 days;
         s.collateralToken = address(share);
         TrailingAnchorMarketHarness centrifuge = new TrailingAnchorMarketHarness(s);
@@ -111,9 +107,7 @@ contract TrailingAnchorMarketTest is Test {
         MarketDeploymentResult memory d =
             centrifuge.deployTrailingAnchorMarket(protocol, parameters, address(centrifuge));
         CentrifugeNavOracle nav = CentrifugeNavOracle(d.params.oracle);
-        assertEq(address(nav.SPOKE()), address(spoke), "SPOKE");
-        assertEq(nav.POOL_ID(), poolId, "POOL_ID");
-        assertEq(nav.SHARE_CLASS_ID(), shareClassId, "SHARE_CLASS_ID");
+        assertEq(address(nav.VAULT()), address(vault), "VAULT");
         assertEq(nav.MAX_PRICE_AGE(), 3 days, "MAX_PRICE_AGE");
         assertEq(nav.PRICE_SCALE(), 1e18, "PRICE_SCALE");
         assertEq(nav.anchorPrice(), SEED_PRICE, "anchor");

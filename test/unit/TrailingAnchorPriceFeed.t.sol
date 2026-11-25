@@ -4,6 +4,7 @@ pragma solidity 0.8.36;
 import {Test} from "forge-std/Test.sol";
 
 import {CentrifugeNavOracle} from "../../src/oracle/CentrifugeNavOracle.sol";
+import {ChainlinkOracle} from "../../src/oracle/ChainlinkOracle.sol";
 import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 import {UsdyNavOracle} from "../../src/oracle/UsdyNavOracle.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
@@ -11,7 +12,7 @@ import {TrailingAnchorKind, TrailingAnchorPriceFeedSpec} from "../../script/depl
 import {TrailingAnchorPriceFeed} from "../../script/deployment/TrailingAnchorPriceFeed.sol";
 
 import {MockERC20} from "../setup/Mocks.sol";
-import {MockCentrifugeSpoke, MockOndoPriceGetter} from "../setup/NavSourceMocks.sol";
+import {MockCentrifugeVault, MockChainlinkFeed, MockOndoPriceGetter} from "../setup/NavSourceMocks.sol";
 import {TrailingAnchorOracleModel} from "../setup/TrailingAnchorOracleModel.sol";
 
 /// @dev External entry points, so that a test can expect a revert of the library.
@@ -63,6 +64,14 @@ contract TrailingAnchorPriceFeedTest is Test {
     function test_kindName_namesEachKind() external pure {
         assertEq(TrailingAnchorPriceFeed.kindName(TrailingAnchorKind.Usdy), "usdy-nav", "Usdy");
         assertEq(TrailingAnchorPriceFeed.kindName(TrailingAnchorKind.Centrifuge), "centrifuge-nav", "Centrifuge");
+        assertEq(TrailingAnchorPriceFeed.kindName(TrailingAnchorKind.Chainlink), "chainlink", "Chainlink");
+    }
+
+    /// @dev The kinds keep their values: a new kind is appended, never inserted.
+    function test_kind_valuesArePinned() external pure {
+        assertEq(uint8(TrailingAnchorKind.Usdy), 0, "Usdy");
+        assertEq(uint8(TrailingAnchorKind.Centrifuge), 1, "Centrifuge");
+        assertEq(uint8(TrailingAnchorKind.Chainlink), 2, "Chainlink");
     }
 
     /// @dev The Usdy adapter reads the spec's source, and its scale comes from the 6- and 18-decimal tokens.
@@ -79,17 +88,29 @@ contract TrailingAnchorPriceFeedTest is Test {
 
     /// @dev Each Centrifuge field of the spec lands in its own immutable.
     function test_implementation_buildsTheCentrifugeAdapter() external {
-        (MockCentrifugeSpoke spoke, TrailingAnchorPriceFeedSpec memory s) = _centrifugeSpec();
+        (MockCentrifugeVault vault, TrailingAnchorPriceFeedSpec memory s) = _centrifugeSpec();
         CentrifugeNavOracle adapter = CentrifugeNavOracle(harness.implementation(s));
-        assertEq(address(adapter.SPOKE()), address(spoke), "SPOKE");
-        assertEq(adapter.POOL_ID(), s.poolId, "POOL_ID");
-        assertEq(adapter.SHARE_CLASS_ID(), s.shareClassId, "SHARE_CLASS_ID");
+        assertEq(address(adapter.VAULT()), address(vault), "VAULT");
         assertEq(adapter.MAX_PRICE_AGE(), 3 days, "MAX_PRICE_AGE");
         assertEq(adapter.PRICE_SCALE(), 1e18, "PRICE_SCALE");
     }
 
+    /// @dev The Chainlink adapter reads the spec's source as its feed and takes the spec's `maxPriceAge`.
+    function test_implementation_buildsTheChainlinkAdapter() external {
+        MockChainlinkFeed feed = new MockChainlinkFeed(6);
+        TrailingAnchorPriceFeedSpec memory s = spec;
+        s.kind = TrailingAnchorKind.Chainlink;
+        s.source = address(feed);
+        s.maxPriceAge = 2 days;
+        ChainlinkOracle adapter = ChainlinkOracle(harness.implementation(s));
+        assertEq(address(adapter.FEED()), address(feed), "FEED");
+        assertEq(adapter.MAX_PRICE_AGE(), 2 days, "MAX_PRICE_AGE");
+        assertEq(adapter.ANSWER_SCALE(), 1e12, "ANSWER_SCALE");
+        assertEq(adapter.PRICE_SCALE(), 1e6, "PRICE_SCALE");
+    }
+
     /// @dev The build runs the adapter's own share token check, so a spec whose collateral is not the share token of
-    ///      its pool builds no reference.
+    ///      its vault builds no reference.
     function testRevert_implementation_centrifugeCollateralIsNotTheShareToken() external {
         (, TrailingAnchorPriceFeedSpec memory s) = _centrifugeSpec();
         address share = s.collateralToken;
@@ -273,17 +294,13 @@ contract TrailingAnchorPriceFeedTest is Test {
         return [nav.DEFAULT_ADMIN_ROLE(), nav.MANAGER_ROLE(), nav.PRICE_ACCEPTOR_ROLE()];
     }
 
-    function _centrifugeSpec() internal returns (MockCentrifugeSpoke spoke, TrailingAnchorPriceFeedSpec memory s) {
-        uint64 poolId = 281474976710662;
-        bytes16 shareClassId = 0x00010000000000060000000000000001;
+    function _centrifugeSpec() internal returns (MockCentrifugeVault vault, TrailingAnchorPriceFeedSpec memory s) {
         MockERC20 share = new MockERC20("JTRSY", "JTRSY", 6);
-        spoke = new MockCentrifugeSpoke(poolId, shareClassId, address(share));
-        spoke.setCurrentPrice(1e18);
+        vault = new MockCentrifugeVault(address(share), spec.loanToken);
+        vault.setCurrentPrice(1e18);
         s = spec;
         s.kind = TrailingAnchorKind.Centrifuge;
-        s.source = address(spoke);
-        s.poolId = poolId;
-        s.shareClassId = shareClassId;
+        s.source = address(vault);
         s.maxPriceAge = 3 days;
         s.collateralToken = address(share);
     }

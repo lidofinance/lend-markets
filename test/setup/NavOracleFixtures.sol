@@ -4,12 +4,13 @@ pragma solidity 0.8.36;
 import {Test} from "forge-std/Test.sol";
 
 import {CentrifugeNavOracle} from "../../src/oracle/CentrifugeNavOracle.sol";
+import {ChainlinkOracle} from "../../src/oracle/ChainlinkOracle.sol";
 import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 import {UsdyNavOracle} from "../../src/oracle/UsdyNavOracle.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 
 import {MockERC20} from "./Mocks.sol";
-import {INavSourceMock, MockCentrifugeSpoke, MockOndoPriceGetter} from "./NavSourceMocks.sol";
+import {INavSourceMock, MockCentrifugeVault, MockChainlinkFeed, MockOndoPriceGetter} from "./NavSourceMocks.sol";
 
 /// @notice One NAV adapter over its source mock, for suites that run the same anchor rules through every adapter. A
 ///         concrete suite mixes in exactly one of the fixtures below.
@@ -53,24 +54,42 @@ abstract contract UsdyNavOracleFixture is NavOracleFixture {
     }
 }
 
-/// @notice `CentrifugeNavOracle` over the Spoke, for a 6-decimal share class like JTRSY.
+/// @notice `CentrifugeNavOracle` over a vault, for a 6-decimal share token like JTRSY.
 abstract contract CentrifugeNavOracleFixture is NavOracleFixture {
-    uint64 internal constant POOL_ID = 281474976710662;
-    bytes16 internal constant SHARE_CLASS_ID = 0x00010000000000060000000000000001;
     uint256 internal constant MAX_PRICE_AGE = 7 days;
 
     function _setUpSource() internal override {
         collateralToken = address(new MockERC20("Janus Henderson Anemoy Treasury Fund", "JTRSY", 6));
-        source = new MockCentrifugeSpoke(POOL_ID, SHARE_CLASS_ID, collateralToken);
+        source = new MockCentrifugeVault(collateralToken, address(0));
     }
 
+    /// @dev The vault's asset becomes `loanToken`, the one loan token of the suite's oracle. A zero loan token
+    ///      leaves it, so that the constructor, which refuses it, is the next call a suite expects to revert.
     function _newImplementation(address loanToken) internal override returns (address) {
-        return address(
-            new CentrifugeNavOracle(address(source), POOL_ID, SHARE_CLASS_ID, MAX_PRICE_AGE, loanToken, collateralToken)
-        );
+        if (loanToken != address(0)) MockCentrifugeVault(address(source)).setAsset(loanToken);
+        return address(new CentrifugeNavOracle(address(source), MAX_PRICE_AGE, loanToken, collateralToken));
     }
 
     function _namespace() internal pure override returns (string memory) {
         return "lido.lend.storage.CentrifugeNavOracle";
+    }
+}
+
+/// @notice `ChainlinkOracle` over an 18-decimal feed, for an 18-decimal collateral like deJTRSY. With 18 decimals
+///         the feed's answer is the price a suite sets, exactly.
+abstract contract ChainlinkOracleFixture is NavOracleFixture {
+    uint256 internal constant MAX_PRICE_AGE = 2 days;
+
+    function _setUpSource() internal override {
+        collateralToken = address(new MockERC20("JTRSY deRWA", "deJTRSY", 18));
+        source = new MockChainlinkFeed(18);
+    }
+
+    function _newImplementation(address loanToken) internal override returns (address) {
+        return address(new ChainlinkOracle(address(source), MAX_PRICE_AGE, loanToken, collateralToken));
+    }
+
+    function _namespace() internal pure override returns (string memory) {
+        return "lido.lend.storage.ChainlinkOracle";
     }
 }
