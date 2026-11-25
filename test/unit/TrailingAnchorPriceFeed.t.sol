@@ -4,7 +4,7 @@ pragma solidity 0.8.36;
 import {Test} from "forge-std/Test.sol";
 
 import {CentrifugeNavOracle} from "../../src/oracle/CentrifugeNavOracle.sol";
-import {ChainlinkNavOracle} from "../../src/oracle/ChainlinkNavOracle.sol";
+import {ChainlinkOracle} from "../../src/oracle/ChainlinkOracle.sol";
 import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 import {UsdyNavOracle} from "../../src/oracle/UsdyNavOracle.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
@@ -64,7 +64,7 @@ contract TrailingAnchorPriceFeedTest is Test {
     function test_kindName_namesEachKind() external pure {
         assertEq(TrailingAnchorPriceFeed.kindName(TrailingAnchorKind.Usdy), "usdy-nav", "Usdy");
         assertEq(TrailingAnchorPriceFeed.kindName(TrailingAnchorKind.Centrifuge), "centrifuge-nav", "Centrifuge");
-        assertEq(TrailingAnchorPriceFeed.kindName(TrailingAnchorKind.Chainlink), "chainlink-nav", "Chainlink");
+        assertEq(TrailingAnchorPriceFeed.kindName(TrailingAnchorKind.Chainlink), "chainlink", "Chainlink");
     }
 
     /// @dev The kinds keep their values: a new kind is appended, never inserted.
@@ -102,7 +102,7 @@ contract TrailingAnchorPriceFeedTest is Test {
         s.kind = TrailingAnchorKind.Chainlink;
         s.source = address(feed);
         s.maxPriceAge = 2 days;
-        ChainlinkNavOracle adapter = ChainlinkNavOracle(harness.implementation(s));
+        ChainlinkOracle adapter = ChainlinkOracle(harness.implementation(s));
         assertEq(address(adapter.FEED()), address(feed), "FEED");
         assertEq(adapter.MAX_PRICE_AGE(), 2 days, "MAX_PRICE_AGE");
         assertEq(adapter.ANSWER_SCALE(), 1e12, "ANSWER_SCALE");

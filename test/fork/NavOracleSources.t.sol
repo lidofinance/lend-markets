@@ -4,7 +4,7 @@ pragma solidity 0.8.36;
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 import {CentrifugeNavOracle, ICentrifugeVault} from "../../src/oracle/CentrifugeNavOracle.sol";
-import {ChainlinkNavOracle, IChainlinkFeed} from "../../src/oracle/ChainlinkNavOracle.sol";
+import {ChainlinkOracle, IChainlinkFeed} from "../../src/oracle/ChainlinkOracle.sol";
 import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 import {IOndoPriceGetter, UsdyNavOracle} from "../../src/oracle/UsdyNavOracle.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
@@ -118,14 +118,14 @@ contract NavOracleSourcesTest is ForkStack {
 
     /// @dev Chainlink's 6-decimal NAV feeds of JTRSY and JAAA, which any caller reads: the anchor is the answer times
     ///      1e12, and the price of these 6-decimal shares in USDC scales by 1e18 more.
-    function test_chainlinkNavOracle_readsTheChainlinkFeeds() public {
+    function test_chainlinkOracle_readsTheChainlinkFeeds() public {
         _assertFeedSeeds(CHAINLINK_JTRSY_NAV, JTRSY, JTRSY_USDC_VAULT, address(this));
         _assertFeedSeeds(CHAINLINK_JAAA_NAV, JAAA, JAAA_USDC_VAULT, address(this));
     }
 
     /// @dev Chronicle's 18-decimal adapters of the four tokens. A deploy reverts with the router's `NotTolled` for the
     ///      proxy until Chronicle whitelists the proxy's address; the address is predicted before the deploy.
-    function test_chainlinkNavOracle_readsTheChronicleAdapters() public {
+    function test_chainlinkOracle_readsTheChronicleAdapters() public {
         _assertChronicleSeeds(CHRONICLE_JTRSY, CHRONICLE_JTRSY_ROUTER, JTRSY, JTRSY_USDC_VAULT);
         _assertChronicleSeeds(CHRONICLE_JAAA, CHRONICLE_JAAA_ROUTER, JAAA, JAAA_USDC_VAULT);
         _assertChronicleSeeds(CHRONICLE_DEJTRSY, CHRONICLE_DEJTRSY_ROUTER, DEJTRSY, DEJTRSY_USDC_VAULT);
@@ -133,7 +133,7 @@ contract NavOracleSourcesTest is ForkStack {
     }
 
     function _assertChronicleSeeds(address feed, address router, address share, address vault) internal {
-        ChainlinkNavOracle impl = new ChainlinkNavOracle(feed, MAX_FEED_AGE, USDC, share);
+        ChainlinkOracle impl = new ChainlinkOracle(feed, MAX_FEED_AGE, USDC, share);
         address proxy = vm.computeCreateAddress(address(this), vm.getNonce(address(this)));
         try this.deployOracle(address(impl)) {
             revert("the proxy deployed before the whitelist");
@@ -155,12 +155,12 @@ contract NavOracleSourcesTest is ForkStack {
 
     /// @dev `reader` reads the feed for the expected value: a caller the feed answers.
     function _assertFeedSeeds(address feed, address share, address vault, address reader) internal {
-        _assertSeedsFromFeed(new ChainlinkNavOracle(feed, MAX_FEED_AGE, USDC, share), share, vault, reader);
+        _assertSeedsFromFeed(new ChainlinkOracle(feed, MAX_FEED_AGE, USDC, share), share, vault, reader);
     }
 
     /// @dev The oracle over `impl` seeds from the feed's answer at 18 decimals, and that price is within
     ///      `MAX_FEED_DEVIATION` of the share's Centrifuge vault, so the feed prices this token.
-    function _assertSeedsFromFeed(ChainlinkNavOracle impl, address share, address vault, address reader) internal {
+    function _assertSeedsFromFeed(ChainlinkOracle impl, address share, address vault, address reader) internal {
         uint8 shareDecimals = IERC20Metadata(share).decimals();
         assertEq(ICentrifugeVault(vault).share(), share, "the vault's share token");
         IChainlinkFeed feed = impl.FEED();

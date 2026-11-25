@@ -14,12 +14,12 @@ interface IChainlinkFeed {
     function decimals() external view returns (uint8);
 }
 
-/// @title ChainlinkNavOracle
+/// @title ChainlinkOracle
 /// @author Lido
-/// @notice NAV oracle that reads the collateral's price from a feed with Chainlink's aggregator interface.
+/// @notice Oracle that reads the collateral's price from a feed with Chainlink's aggregator interface.
 /// @dev The feed's `updatedAt` is when the feed wrote the value, not when the issuer computed it. The adapter refuses
 ///      a value older than `MAX_PRICE_AGE` and one written after the block time.
-contract ChainlinkNavOracle layout at erc7201("lido.lend.storage.ChainlinkNavOracle") is TrailingAnchorOracleBase {
+contract ChainlinkOracle layout at erc7201("lido.lend.storage.ChainlinkOracle") is TrailingAnchorOracleBase {
     // ---
     // IMMUTABLES
     // ---

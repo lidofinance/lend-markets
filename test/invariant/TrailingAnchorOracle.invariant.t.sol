@@ -11,7 +11,7 @@ import {TrailingAnchorOracleModel, TrailingAnchorOracleState} from "../setup/Tra
 import {MockERC20} from "../setup/Mocks.sol";
 import {
     CentrifugeNavOracleFixture,
-    ChainlinkNavOracleFixture,
+    ChainlinkOracleFixture,
     NavOracleFixture,
     UsdyNavOracleFixture
 } from "../setup/NavOracleFixtures.sol";
@@ -346,7 +346,7 @@ contract TrailingAnchorOracleCentrifugeInvariant is
 /// forge-config: default.invariant.fail-on-revert = true
 /// forge-config: default.invariant.runs = 256
 /// forge-config: default.invariant.depth = 128
-contract TrailingAnchorOracleChainlinkInvariant is TrailingAnchorOracleStampedInvariantTest, ChainlinkNavOracleFixture {
+contract TrailingAnchorOracleChainlinkInvariant is TrailingAnchorOracleStampedInvariantTest, ChainlinkOracleFixture {
     function _maxPriceAge() internal pure override returns (uint256) {
         return MAX_PRICE_AGE;
     }

@@ -6,7 +6,7 @@ import {MathLib} from "@lido-lend/src/libraries/MathLib.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {WAD} from "../../src/libs/Constants.sol";
 import {CentrifugeNavOracle} from "../../src/oracle/CentrifugeNavOracle.sol";
-import {ChainlinkNavOracle} from "../../src/oracle/ChainlinkNavOracle.sol";
+import {ChainlinkOracle} from "../../src/oracle/ChainlinkOracle.sol";
 import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 import {UsdyNavOracle} from "../../src/oracle/UsdyNavOracle.sol";
 import {TrailingAnchorKind, TrailingAnchorPriceFeedSpec} from "./DeploymentTypes.sol";
@@ -31,7 +31,7 @@ library TrailingAnchorPriceFeed {
             return address(new UsdyNavOracle(spec.source, spec.loanToken, spec.collateralToken));
         }
         if (spec.kind == TrailingAnchorKind.Chainlink) {
-            return address(new ChainlinkNavOracle(spec.source, spec.maxPriceAge, spec.loanToken, spec.collateralToken));
+            return address(new ChainlinkOracle(spec.source, spec.maxPriceAge, spec.loanToken, spec.collateralToken));
         }
         return address(new CentrifugeNavOracle(spec.source, spec.maxPriceAge, spec.loanToken, spec.collateralToken));
     }
@@ -39,7 +39,7 @@ library TrailingAnchorPriceFeed {
     /// @notice The price feed kind that a deployment artifact records for `kind`.
     function kindName(TrailingAnchorKind kind) internal pure returns (string memory) {
         if (kind == TrailingAnchorKind.Usdy) return "usdy-nav";
-        if (kind == TrailingAnchorKind.Chainlink) return "chainlink-nav";
+        if (kind == TrailingAnchorKind.Chainlink) return "chainlink";
         return "centrifuge-nav";
     }
 

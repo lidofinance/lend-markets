@@ -4,7 +4,7 @@ pragma solidity 0.8.36;
 import {Test} from "forge-std/Test.sol";
 
 import {CentrifugeNavOracle} from "../../src/oracle/CentrifugeNavOracle.sol";
-import {ChainlinkNavOracle} from "../../src/oracle/ChainlinkNavOracle.sol";
+import {ChainlinkOracle} from "../../src/oracle/ChainlinkOracle.sol";
 import {TrailingAnchorOracleBase} from "../../src/oracle/TrailingAnchorOracleBase.sol";
 import {UsdyNavOracle} from "../../src/oracle/UsdyNavOracle.sol";
 import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
@@ -75,9 +75,9 @@ abstract contract CentrifugeNavOracleFixture is NavOracleFixture {
     }
 }
 
-/// @notice `ChainlinkNavOracle` over an 18-decimal feed, for an 18-decimal collateral like deJTRSY. With 18 decimals
+/// @notice `ChainlinkOracle` over an 18-decimal feed, for an 18-decimal collateral like deJTRSY. With 18 decimals
 ///         the feed's answer is the price a suite sets, exactly.
-abstract contract ChainlinkNavOracleFixture is NavOracleFixture {
+abstract contract ChainlinkOracleFixture is NavOracleFixture {
     uint256 internal constant MAX_PRICE_AGE = 2 days;
 
     function _setUpSource() internal override {
@@ -86,10 +86,10 @@ abstract contract ChainlinkNavOracleFixture is NavOracleFixture {
     }
 
     function _newImplementation(address loanToken) internal override returns (address) {
-        return address(new ChainlinkNavOracle(address(source), MAX_PRICE_AGE, loanToken, collateralToken));
+        return address(new ChainlinkOracle(address(source), MAX_PRICE_AGE, loanToken, collateralToken));
     }
 
     function _namespace() internal pure override returns (string memory) {
-        return "lido.lend.storage.ChainlinkNavOracle";
+        return "lido.lend.storage.ChainlinkOracle";
     }
 }

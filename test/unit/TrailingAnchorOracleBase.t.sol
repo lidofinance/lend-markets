@@ -22,7 +22,7 @@ import {IOssifiableProxy} from "../setup/IOssifiableProxy.sol";
 import {MockERC20} from "../setup/Mocks.sol";
 import {
     CentrifugeNavOracleFixture,
-    ChainlinkNavOracleFixture,
+    ChainlinkOracleFixture,
     NavOracleFixture,
     UsdyNavOracleFixture
 } from "../setup/NavOracleFixtures.sol";
@@ -1817,7 +1817,7 @@ contract TrailingAnchorOracleBaseUsdyTest is TrailingAnchorOracleBaseTest, UsdyN
 
 contract TrailingAnchorOracleBaseCentrifugeTest is TrailingAnchorOracleBaseTest, CentrifugeNavOracleFixture {}
 
-contract TrailingAnchorOracleBaseChainlinkTest is TrailingAnchorOracleBaseTest, ChainlinkNavOracleFixture {}
+contract TrailingAnchorOracleBaseChainlinkTest is TrailingAnchorOracleBaseTest, ChainlinkOracleFixture {}
 
 /// @notice An upgrade behind one proxy to a new version of the same adapter keeps the state.
 contract TrailingAnchorOracleUpgradeTest is Test {

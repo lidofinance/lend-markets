@@ -22,7 +22,7 @@ flowchart LR
 
 ## Scope
 
-In scope are `TrailingAnchorOracleBase`, which holds the rules and implements the core's `IOracle`, and its three adapters, which supply the current price: `UsdyNavOracle` reads USDY's redemption value from Ondo's USDY oracle, `CentrifugeNavOracle` a share class's price from its Centrifuge vault, and `ChainlinkNavOracle` a price from a feed with Chainlink's aggregator interface ([Adapters](#adapters)).
+In scope are `TrailingAnchorOracleBase`, which holds the rules and implements the core's `IOracle`, and its three adapters, which supply the current price: `UsdyNavOracle` reads USDY's redemption value from Ondo's USDY oracle, `CentrifugeNavOracle` a share class's price from its Centrifuge vault, and `ChainlinkOracle` a price from a feed with Chainlink's aggregator interface ([Adapters](#adapters)).
 
 Out of scope: who holds the roles, in [Privileged Roles](roles.md), and the markets' freeze and pause, in [Market controller](market-controller.md).
 
@@ -112,7 +112,7 @@ Every `e^y − 1` in the contract is the sum of the first three Taylor terms, `y
 `price()` applies these steps in order and reverts at the first one that fails:
 
 1. **Suspension.** It reverts with `PricingSuspended(pricingResumesAt)` while `block.timestamp < pricingResumesAt`, without reading the source.
-2. **Source read.** A revert in the source propagates unchanged. An adapter can add its own reverts to the read: `CentrifugeNavOracle` reverts with `StalePrice` or `PriceFromFuture`, and `ChainlinkNavOracle` also with `NegativePrice`.
+2. **Source read.** A revert in the source propagates unchanged. An adapter can add its own reverts to the read: `CentrifugeNavOracle` reverts with `StalePrice` or `PriceFromFuture`, and `ChainlinkOracle` also with `NegativePrice`.
 3. **Zero.** It reverts with `ZeroPrice` on a zero current price.
 4. **Bounds.** It reverts with `PriceOutOfBounds(currentPrice, lowerBound, upperBound)` outside the bounds.
 5. **Result.** It returns `currentPrice × PRICE_SCALE` ([Units and scaling](#units-and-scaling)); only a current price above `type(uint256).max / PRICE_SCALE` overflows here.
@@ -312,8 +312,8 @@ The invariants hold for one storage namespace behind its proxy, from its `initia
 
 What the code does not check:
 
-- **Source age.** `UsdyNavOracle` does not read when the source last updated, and an anchor never goes stale. A USDY source that stops changing stays priced; a monitor and the markets' freeze have to catch it. `CentrifugeNavOracle` reverts on a vault price stamp older than `MAX_PRICE_AGE`. The stamp is the later of the share price's and the asset price's, so a newer asset price can hide an older share price. `ChainlinkNavOracle` reverts on a feed value written more than `MAX_PRICE_AGE` ago; the feed's `updatedAt` is when the feed wrote the value, so a NAV that stops changing stays priced while the feed keeps writing it.
-- **Source binding.** The base reads `loanToken` and `collateralToken` only for their decimals. Nothing ties the USDY source to the USDY token. `CentrifugeNavOracle` requires the vault's share token to be the collateral token and its asset to be the loan token. Nothing ties a `ChainlinkNavOracle` feed to its token; `initialize`'s price range is the only check that the feed prices the collateral.
+- **Source age.** `UsdyNavOracle` does not read when the source last updated, and an anchor never goes stale. A USDY source that stops changing stays priced; a monitor and the markets' freeze have to catch it. `CentrifugeNavOracle` reverts on a vault price stamp older than `MAX_PRICE_AGE`. The stamp is the later of the share price's and the asset price's, so a newer asset price can hide an older share price. `ChainlinkOracle` reverts on a feed value written more than `MAX_PRICE_AGE` ago; the feed's `updatedAt` is when the feed wrote the value, so a value that stops changing stays priced while the feed keeps writing it.
+- **Source binding.** The base reads `loanToken` and `collateralToken` only for their decimals. Nothing ties the USDY source to the USDY token. `CentrifugeNavOracle` requires the vault's share token to be the collateral token and its asset to be the loan token. Nothing ties a `ChainlinkOracle` feed to its token; `initialize`'s price range is the only check that the feed prices the collateral.
 - **Loan-token price.** One loan token counts as one unit of the source's currency, and the oracle does not read the loan token's own price. This is an accepted risk. A loan token below one unit makes the price too low, so borrowers can be liquidated early. A loan token above one unit makes the price too high by the same fraction. At a 98% LLTV, the sizing budget for a high price is 1.43%, so a 1% move uses most of it. For `CentrifugeNavOracle` the source's currency is the loan token: the vault converts the share price at the pool's own price of the loan token.
 - **Sizing by the manager.** No contract checks the sizing rule. A `setParameters` call with a too-wide corridor lets a faulty source leave bad debt. A parameter change is a Lido DAO governance action, and its reviewers must check the rule.
 - **Earlier parameters.** The sizing rule speaks for one set of values, and the anchor keeps its place past a new floor or ceiling. Two calls that each pass the rule can together break it. An example at a 98% LLTV: the first call sets no floor and a 1.27% ceiling, and a re-anchor moves the anchor up. The second call sets no ceiling and a 1.26% floor, and a re-anchor moves the anchor down. The lowest price is then under the debt of a position opened at the highest price.
@@ -361,7 +361,7 @@ The constructor reverts with `UnsupportedDecimals` when `36 + loanDecimals < col
 |---|---|---|---|
 | `UsdyNavOracle` | `(source, loanToken, collateralToken)` | Ondo's USDY oracle, `getPrice()` | USDY redemption value in USD, 18 decimals |
 | `CentrifugeNavOracle` | `(vault, maxPriceAge, loanToken, collateralToken)` | vault `priceLastUpdated()`, then `convertToAssets(10^36 / PRICE_SCALE)` | share price in the loan token, 18 decimals |
-| `ChainlinkNavOracle` | `(feed, maxPriceAge, loanToken, collateralToken)` | the feed's `latestRoundData()` | the feed's `answer`, scaled from its `decimals()` to 18 decimals |
+| `ChainlinkOracle` | `(feed, maxPriceAge, loanToken, collateralToken)` | the feed's `latestRoundData()` | the feed's `answer`, scaled from its `decimals()` to 18 decimals |
 
 The fork tests read these mainnet sources:
 
@@ -386,7 +386,7 @@ The fork tests read these mainnet sources:
 
 From February to November 2026, the oldest JTRSY and JAAA prices were about 131 hours old, after the Easter holidays. A `MAX_PRICE_AGE` of 7 days does not stop these honest prices.
 
-`ChainlinkNavOracle` scales the feed's `answer` by `10^(18 − decimals())`, with the decimals read in its constructor, and does not read the round fields. The adapter adds its own checks:
+`ChainlinkOracle` scales the feed's `answer` by `10^(18 − decimals())`, with the decimals read in its constructor, and does not read the round fields. The adapter adds its own checks:
 
 - The constructor reverts with `MaxPriceAgeIsZero` on a zero `maxPriceAge`, and with `UnsupportedFeedDecimals(feedDecimals)` when the feed has more than 18 decimals.
 - Each price read reverts with `PriceFromFuture(updatedAt)` when `updatedAt > block.timestamp`, then with `StalePrice(updatedAt)` when `block.timestamp − updatedAt > MAX_PRICE_AGE`, then with `NegativePrice(answer)` when `answer < 0`.
@@ -395,7 +395,7 @@ Each adapter returns the source's value as is: one loan token counts as one unit
 
 ### Storage
 
-Each adapter stores its state at `erc7201("lido.lend.storage.<ContractName>")`, in four slots, with packed fields from the low bits up. The fields are grouped by use, so a drift reads three slots and writes one. The base is `0x122c02b6c23a425b38bb372a8ef92bda1cb6c1f0f92387327be1d4669516e800` for `UsdyNavOracle`, `0xadd8a162807c0a5c641cbb443f3a5adf7735f0856ce3d3f8789bb5d6d97ba000` for `CentrifugeNavOracle` and `0x5f765437a3ed42aea28b208acf2a1a82d4e1449cf5d1b7a7344ad5aed30e1100` for `ChainlinkNavOracle`.
+Each adapter stores its state at `erc7201("lido.lend.storage.<ContractName>")`, in four slots, with packed fields from the low bits up. The fields are grouped by use, so a drift reads three slots and writes one. The base is `0x122c02b6c23a425b38bb372a8ef92bda1cb6c1f0f92387327be1d4669516e800` for `UsdyNavOracle`, `0xadd8a162807c0a5c641cbb443f3a5adf7735f0856ce3d3f8789bb5d6d97ba000` for `CentrifugeNavOracle` and `0x2b94dcc1f7c452973fef7f3857ccee6b1304e3e10b7af5d9d15a3e1188eb9000` for `ChainlinkOracle`.
 
 | Slot | Fields, with bits |
 |---|---|

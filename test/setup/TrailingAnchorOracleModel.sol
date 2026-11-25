@@ -326,7 +326,7 @@ library TrailingAnchorOracleModel {
     }
 
     /// @dev The revert a read of a stamped source gives at `time`, or nothing: the source down, then a price stamped
-    ///      after `time`, then a price stamped more than `maxPriceAge` before it. `ChainlinkNavOracle`'s two stamp
+    ///      after `time`, then a price stamped more than `maxPriceAge` before it. `ChainlinkOracle`'s two stamp
     ///      errors have the signatures of `CentrifugeNavOracle`'s, so these encodings serve both adapters.
     function sourceRevert(bool sourceDown, uint256 computedAt, uint256 maxPriceAge, uint256 time)
         internal
