@@ -1,4 +1,4 @@
-# Mainnet: protocol deployed; market activation and factory registration pending.
+# Mainnet protocol after the Easy Track factory registrations in DAO vote 207.
 
 parameters:
   - &agent "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"
@@ -8,6 +8,13 @@ parameters:
   - &riskSteward "0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E"
   - &weth "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
   - &wstEth "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
+  - &launchMarket "0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29"
+  - &launchController "0xCF1B266d320CA9c0d4e13eF2C46465962F040e88"
+  - &launchOracle "0x20a078F9940dC05C46De4153D1bCbd54D2b5b151"
+  - &launchCurve "0x6076f89f5Cd68c526C73eA1F730d9ce8f05301a6"
+  - &launchVault "0xd8765FA896be3D30A49B9a7d95453E34E2c7A056"
+  - &seedRecipient "0x000000000000000000000000000000000000dEaD"
+  - &launchLltv "980000000000000000"
   - &stEth "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"
 
   - &easyTrackTrustedCaller "0x4f29aA4c299e17176b48c41D67ee97aE673d29bC"
@@ -82,24 +89,38 @@ l1:
         DOMAIN_SEPARATOR: "0x6793b670e0cbad31fb5f11bb7c8efbe9dc7daa1b650bf03f8ee9bca0ecc2f4c4"
         extSloads: null
         feeRecipient: *agent
-        idToMarketParams: null
+        idToMarketParams:
+          - args: [*launchMarket]
+            result: [*weth, *wstEth, *launchOracle, *irmRouter, *launchLltv]
         isAuthorized: null
         isInitialized: true
         isIrmEnabled:
           - args: [*irmRouter]
-            result: false
+            result: true
           - args: [*adaptiveCurveIrm]
             result: false
         isLltvEnabled:
-          # Candidate LLTV from the draft market config; no markets exist yet.
+          - args: [*launchLltv]
+            result: true
           - args: ["950000000000000000"]
             result: false
-        isSettlementEnabled: null
-        market: null
-        marketController: null
+        isSettlementEnabled:
+          - args: [*launchMarket]
+            result: true
+        market:
+          - args: [*launchMarket]
+            # supply assets/shares, borrow assets/shares, enactment timestamp, fee
+            result: ["1000001000", "1000001000000000", "0", "0", null, "100000000000000000"]
+        marketController:
+          - args: [*launchMarket]
+            result: *launchController
         nonce: null
         owner: *ownerFacade
-        position: null
+        position:
+          - args: [*launchMarket, *seedRecipient]
+            result: ["1000000000", "0", "0"]
+          - args: [*launchMarket, *launchVault]
+            result: ["1000000000000000", "0", "0"]
     ownerFacade:
       name: LidoLendOwner
       address: *ownerFacade
@@ -324,16 +345,16 @@ l1:
         MIN_PAUSE_DURATION: "432000"
         getPausableCount:
           - args: [*pauserCommittee]
-            result: 0
-        getPausables: []
-        getPauser: null
-        heartbeatExpiry:
-          - args: [*pauserCommittee]
-            result: "0"
+            result: 1
+        getPausables: [*launchController]
+        getPauser:
+          - args: [*launchController]
+            result: *pauserCommittee
+        heartbeatExpiry: null  # Relative to registration; isPauserLive checks the active deadline.
         heartbeatInterval: "31536000"
         isPauserLive:
           - args: [*pauserCommittee]
-            result: false
+            result: true
         pauseDuration: "1814400"
     riskStewardDashboard:
       name: RiskStewardDashboard
@@ -351,8 +372,12 @@ l1:
         getRoleMemberCount: null
         getRoleMembers: null
         hasRole: null
-        isMarketSteward: null
-        marketStewards: null
+        isMarketSteward:
+          - args: [*launchMarket, *riskSteward]
+            result: true
+        marketStewards:
+          - args: [*launchMarket]
+            result: [*riskSteward]
         supportsInterface:
           - args: ["0x01ffc9a7"]
             result: true
@@ -488,7 +513,9 @@ l1:
         borrowRateView: null
         isInitialized: true
         manager: *evmScriptExecutor
-        marketIrm: null
+        marketIrm:
+          - args: [*launchMarket]
+            result: *adaptiveCurveIrm
         owner: *agent
     adaptiveCurveIrm:
       name: AdaptiveCurveIrm
@@ -497,9 +524,13 @@ l1:
         ROUTER: *irmRouter
         borrowRateView: null
         manager: *evmScriptExecutor
-        marketCurveConfig: null
+        marketCurveConfig:
+          - args: [*launchMarket]
+            result: *launchCurve
         owner: *agent
-        rateAtTarget: null
+        rateAtTarget:
+          - args: [*launchMarket]
+            result: "637898291"
     bundler3:
       name: Bundler3
       address: *bundler3
@@ -684,22 +715,22 @@ l1:
         evmScriptFactoryPermissions:
         - args:
           - "0x17bb2A2B5983D29392A5d31D627D4C8B13383fe6"
-          result: "0x"
+          result: "0xf6f1565f4fd3d29e6bdab86764a50bcde381422f2078614b81b7cc9523b30429110282d90db2fa90ff443d914451cfc585378a1073e8f338e11a97e090e47e2f0fdd3d5abee60e2ec3c241bc213ef3ba16234a7c689999209ce515d7182d4cbbd0a81a130a303237d338a0b5835edcb011ab3afd338d93fc3f107d1fbca49f425321cb27f6ef5cbb94a72c419e90390c85378a1073e8f338e11a97e090e47e2f0fdd3d5a2b4f013c"
         - args:
           - "0x4e89cc970F0DBAE2f8C38C083D5D345B4F9e76b8"
-          result: "0x"
+          result: "0xd0a81a130a303237d338a0b5835edcb011ab3afd338d93fcd0a81a130a303237d338a0b5835edcb011ab3afdc9387332d0a81a130a303237d338a0b5835edcb011ab3afd71a99c22"
         - args:
           - "0x9fE41afb2114bF9430D7f9B1Fb65f0a4B9DeF779"
-          result: "0x"
+          result: "0x85378a1073e8f338e11a97e090e47e2f0fdd3d5a8543159685378a1073e8f338e11a97e090e47e2f0fdd3d5af3ad2cac85378a1073e8f338e11a97e090e47e2f0fdd3d5a3cab947d85378a1073e8f338e11a97e090e47e2f0fdd3d5ad9101d1785378a1073e8f338e11a97e090e47e2f0fdd3d5adf03d75d85378a1073e8f338e11a97e090e47e2f0fdd3d5a42abe0fd"
         - args:
           - "0x9D75EaE321976e85e472847AFD21246F1f87dC43"
-          result: "0x"
+          result: "0x85378a1073e8f338e11a97e090e47e2f0fdd3d5a6835da9685378a1073e8f338e11a97e090e47e2f0fdd3d5a084f4e3f85378a1073e8f338e11a97e090e47e2f0fdd3d5a3d15094a85378a1073e8f338e11a97e090e47e2f0fdd3d5abf96eb0185378a1073e8f338e11a97e090e47e2f0fdd3d5ac49495df85378a1073e8f338e11a97e090e47e2f0fdd3d5a2b4f013c"
         - args:
           - "0x7276CE5f92911216d41C7b0A9C3575DE873763E9"
-          result: "0x"
+          result: "0xc3c241bc213ef3ba16234a7c689999209ce515d7182d4cbbc3c241bc213ef3ba16234a7c689999209ce515d79fdcc880"
         - args:
           - "0x5795E73C0c2007ceD7D65cE4FC21c0C09F14C668"
-          result: "0x"
+          result: "0x026a770badc7126c7252ef8d407e5b9c56147491151c1adef6f1565f4fd3d29e6bdab86764a50bcde381422f2078614b"
         - args:
           - "0xA30b212c3657fa745feaE4b48B7Eb0A8F429C604"
           result: "0x"
@@ -712,22 +743,22 @@ l1:
         isEVMScriptFactory:
         - args:
           - "0x17bb2A2B5983D29392A5d31D627D4C8B13383fe6"
-          result: false
+          result: true
         - args:
           - "0x4e89cc970F0DBAE2f8C38C083D5D345B4F9e76b8"
-          result: false
+          result: true
         - args:
           - "0x9fE41afb2114bF9430D7f9B1Fb65f0a4B9DeF779"
-          result: false
+          result: true
         - args:
           - "0x9D75EaE321976e85e472847AFD21246F1f87dC43"
-          result: false
+          result: true
         - args:
           - "0x7276CE5f92911216d41C7b0A9C3575DE873763E9"
-          result: false
+          result: true
         - args:
           - "0x5795E73C0c2007ceD7D65cE4FC21c0C09F14C668"
-          result: false
+          result: true
         - args:
           - "0xA30b212c3657fa745feaE4b48B7Eb0A8F429C604"
           result: false

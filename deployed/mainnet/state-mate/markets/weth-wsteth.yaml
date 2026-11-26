@@ -1,11 +1,5 @@
-# Fill approved rates before rehearsal; production addresses after recording.
-# Inert WETH/wstETH market on mainnet (block 26451206): components deployed, core market not created, guardian delegated, before heartbeats.
-# Fill addresses and APR-derived rates before running.
-# Standalone market verification: shared entries read only this market; proxy metadata binds the ABI.
-# Fill the participating Safe expectations from the approved roster before rehearsal.
-# Complete non-enumerable instant-activation caller checks from controller event history in the plan.
-# Null checks are deliberate exclusions, not successful assertions; recheck ABI coverage if the selected Safe version changes.
-# After activation, change only reviewed expectations for routing, fee/seed, steward/pauser and allowlists.
+# Ethereum mainnet WETH/wstETH immediately after the pending activation motion.
+# The preseed locks 1e9 core and 1e9 vault shares at 0xdead.
 deployed:
   l1:
   - '0x026a770badc7126c7252Ef8d407E5b9C56147491'
@@ -48,40 +42,49 @@ l1:
         - args:
           - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
           result:
+          - '1000001000'
+          - '1000001000000000'
           - '0'
           - '0'
-          - '0'
-          - '0'
-          - '0'
-          - '0'
+          - null  # lastUpdate is the enactment block timestamp
+          - '100000000000000000'
         marketController:
         - args:
           - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
-          result: '0x0000000000000000000000000000000000000000'
+          result: '0xCF1B266d320CA9c0d4e13eF2C46465962F040e88'
         idToMarketParams:
         - args:
           - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
           result:
-          - '0x0000000000000000000000000000000000000000'
-          - '0x0000000000000000000000000000000000000000'
-          - '0x0000000000000000000000000000000000000000'
-          - '0x0000000000000000000000000000000000000000'
-          - '0'
+          - '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
+          - '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0'
+          - '0x20a078F9940dC05C46De4153D1bCbd54D2b5b151'
+          - '0x81B7cC9523B30429110282d90db2fa90ff443d91'
+          - '980000000000000000'
         isSettlementEnabled:
         - args:
           - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
-          result: false
+          result: true
         # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
         DOMAIN_SEPARATOR: null
         extSloads: null
-        feeRecipient: null
+        feeRecipient: '0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c'
         isAuthorized: null
         isInitialized: null
         isIrmEnabled: null
         isLltvEnabled: null
         nonce: null
         owner: null
-        position: null
+        position:
+        - args:
+          - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
+          - '0x000000000000000000000000000000000000dEaD'
+          result:
+          - '1000000000'
+          - '0'
+          - '0'
+        - args: ['0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29', '0xd8765FA896be3D30A49B9a7d95453E34E2c7A056']
+          result: ["1000000000000000", "0", "0"]
     irmRouter:
       name: IrmRouter
       address: '0x81B7cC9523B30429110282d90db2fa90ff443d91'
@@ -91,7 +94,7 @@ l1:
         marketIrm:
         - args:
           - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
-          result: '0x0000000000000000000000000000000000000000'
+          result: '0xf6f1565F4fD3d29E6bDAb86764A50BCde381422f'
         # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
         MORPHO: null
         borrowRateView: null
@@ -105,13 +108,15 @@ l1:
         marketCurveConfig:
         - args:
           - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
-          result: '0x0000000000000000000000000000000000000000'
+          result: '0x6076f89f5Cd68c526C73eA1F730d9ce8f05301a6'
         # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
         ROUTER: null
         borrowRateView: null
         manager: null
         owner: null
-        rateAtTarget: null
+        rateAtTarget:
+        - args: ['0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29']
+          result: "637898291"
     riskStewardDashboard:
       name: RiskStewardDashboard
       address: '0xC3C241bC213EF3ba16234A7c689999209cE515D7'
@@ -119,7 +124,8 @@ l1:
         marketStewards:
         - args:
           - '0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29'
-          result: []
+          result:
+          - '0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E'
         # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
         DEFAULT_ADMIN_ROLE: null
         LIDO_LEND: null
@@ -129,7 +135,9 @@ l1:
         getRoleMemberCount: null
         getRoleMembers: null
         hasRole: null
-        isMarketSteward: null
+        isMarketSteward:
+        - args: ['0xe4af8961b4e5a779b85d8c461be1007e4b78a7933976e0a5f23121682020de29', '0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E']
+          result: true
         supportsInterface: null
     circuitBreaker:
       name: CircuitBreaker
@@ -138,7 +146,7 @@ l1:
         getPauser:
         - args:
           - '0xCF1B266d320CA9c0d4e13eF2C46465962F040e88'
-          result: '0x0000000000000000000000000000000000000000'
+          result: '0x604B13eD638663AA0C1eEF0c3482e51f228BA2E1'
         # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
         ADMIN: null
         MAX_HEARTBEAT_INTERVAL: null
@@ -255,11 +263,9 @@ l1:
         - args:
           - '0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E'
           result: '0xB3779664CeE33Df484D7e610eD600fe1A2983651'
-        getHeartbeat:
-        - args:
-          - '0x1011E8a0668da8bbED925cB5A6DA5aa128C2BB5E'
-          result: 0
-        getQuorumFrontier: 0
+        # Heartbeat and quorum frontier timestamps advance independently of market activation.
+        getHeartbeat: null
+        getQuorumFrontier: null
         getRoleAdmin:
         - args:
           - '0x0000000000000000000000000000000000000000000000000000000000000000'
@@ -418,13 +424,13 @@ l1:
         name: Lido Lend WETH (wstETH)
         symbol: lendWETHwstETH
         decimals: 18
-        totalSupply: '0'
-        totalAssets: '0'
-        managedSupplyShares: '0'
+        totalSupply: '1000000000'
+        totalAssets: '1000000000'
+        managedSupplyShares: '1000000000000000'
         balanceOf:
         - args:
           - '0x000000000000000000000000000000000000dEaD'
-          result: '0'
+          result: '1000000000'
         # Deliberate exclusions: unrelated protocol state, redundant ABI constants, or actor-specific reads covered by the plan/tests.
         DEFAULT_MAX_SETTLEMENT_ITERATIONS: null
         allowance: null
