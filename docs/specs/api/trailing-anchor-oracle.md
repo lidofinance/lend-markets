@@ -428,8 +428,8 @@ The oracle does not know the markets that read it, so it does not check the para
 | `maxPriceBelowAnchor` | `uint64` | Lower bound: how far below the anchor price the current price can be, as a fraction of the anchor price, WAD. Below it, `price()` reverts. 0.001e18 is 0.1%. |
 | `pricingResumesAt` | `uint40` | Time before which `price()` reverts with `PricingSuspended`. |
 | `pendingAnchorAt` | `uint40` | Time when the pending anchor was recorded. Zero means no pending anchor. |
-| `maxAnchorContinuousRiseRate` | `uint64` | Largest rate at which a drift can raise the anchor, continuously compounded per year, WAD. 0.06e18 permits a rise of e^0.06 − 1, about 6.18%, in a year. The update schedule does not change that. |
-| `maxAnchorContinuousFallRate` | `uint64` | Largest rate at which a drift can lower the anchor, continuously compounded per year, WAD. 0.01e18 permits a fall of 1 − e^−0.01, about 0.995%, in a year. The update schedule does not change that. |
+| `maxAnchorContinuousRiseRate` | `uint64` | Largest rate at which a drift can raise the anchor, continuously compounded per year, WAD. 0.06e18 permits a rise of e^0.06 − 1, about 6.18%, in a year. The update schedule does not change that limit, but the anchor reached depends on it. |
+| `maxAnchorContinuousFallRate` | `uint64` | Largest rate at which a drift can lower the anchor, continuously compounded per year, WAD. 0.01e18 permits a fall of 1 − e^−0.01, about 0.995%, in a year. The update schedule does not change that limit, but the anchor reached depends on it. |
 | `maxAnchorBelowBase` | `uint64` | Floor: how far below `basePrice` an update can move the anchor, as a fraction of that price, WAD. 0.01e18 is 1%. |
 | `maxAnchorAboveBase` | `uint64` | Ceiling: how far above `basePrice` a re-anchor can move the anchor, as a fraction of that price, WAD. 0.002e18 is 0.2%. |
 | `pendingAnchorPrice` | `uint104` | Price of the pending anchor, with `PRICE_DECIMALS` decimals. Zero means no pending anchor. |
