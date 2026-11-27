@@ -77,15 +77,13 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
         params = m.params;
         marketId = m.id;
 
-        // The pair is recorded under the name of the market it serves, and a deployment may carry none.
-        string memory vaultArtifact = string.concat("vaults/", market_, ".toml");
-        string memory adapterArtifact = string.concat("adapters/", market_, ".toml");
-        if (!_hasArtifact(vaultArtifact) || !_hasArtifact(adapterArtifact)) {
-            vm.skip(true, string.concat("MetaMorphoV2: run has no vault-v2 pair for '", market_, "'"));
+        (address vaultAddress, address adapterAddress) = _vaultPair(market_);
+        if (vaultAddress == address(0) || adapterAddress == address(0)) {
+            vm.skip(true, "MetaMorphoV2: no vault-v2 pair for this market");
             return;
         }
-        vault2 = IVaultV2(_artifactAddr(vaultArtifact, "vault.address"));
-        adapterAddr = _artifactAddr(adapterArtifact, "adapter.address");
+        vault2 = IVaultV2(vaultAddress);
+        adapterAddr = adapterAddress;
         adapter = IMorphoMarketV1AdapterLike(adapterAddr);
 
         // The adapter drives the SAME market the suite is bound to. The two param structs are ABI-identical
@@ -148,6 +146,55 @@ contract MetaMorphoV2IntegrationTest is ForkStack {
         assertGt(core.position(marketId, USER).supplyShares, 0, "direct market position remains with user");
         assertEq(vault2.balanceOf(USER), 0, "user exited vault shares");
         assertEq(m.loanToken.balanceOf(SOLVER), 10 ether, "solver can repay temporary liquidity");
+    }
+
+    /// @dev One second after a borrow accrued the market, the deployed pair cannot take a
+    ///      deposit or report its total assets.
+    ///      The test is isolated, so each call is its own transaction. Vault V2 caches its total assets for the rest of
+    ///      a transaction.
+    ///      Control: a core accrual in the same block makes the market current, and the same deposit goes through.
+    /// @dev Same issue as `testRevert_oneSecondStale_vaultEntryPoints` in `test/scenario/VaultV2RouterBinding.t.sol`;
+    ///      this test shows the revert on the deployed Vault V2 and adapter.
+    /// forge-config: default.isolate = true
+    function testRevert_oneSecondAfterBorrow_depositAndTotalAssets() public {
+        uint256 borrowed = 1 ether;
+        _supplyCollateral(BORROWER, _collateralFor(borrowed));
+        _warpPastActivation(m);
+
+        _mintWETH(USER, 11 ether);
+        vm.startPrank(USER);
+        m.loanToken.approve(address(vault2), type(uint256).max);
+        vault2.deposit(10 ether, USER);
+        vm.stopPrank();
+        vm.prank(ALLOCATOR);
+        vault2.allocate(adapterAddr, abi.encode(adapterParams), 10 ether);
+
+        vm.prank(BORROWER);
+        core.borrow(params, borrowed, 0, BORROWER, BORROWER);
+        assertEq(core.market(marketId).lastUpdate, block.timestamp, "borrow accrued the market");
+        vm.warp(block.timestamp + 1);
+
+        // Pins the cause of the dataless reverts: the IRM that the adapter is bound to has no `rateAtTarget`.
+        address boundIrm = adapter.adaptiveCurveIrm();
+        bytes memory rateAtTargetCall = abi.encodeWithSignature("rateAtTarget(bytes32)", marketId);
+        (bool ok, bytes memory returned) = boundIrm.staticcall(rateAtTargetCall);
+        assertFalse(ok, "bound IRM answers rateAtTarget");
+        assertEq(returned.length, 0, "bound IRM revert carries data");
+
+        vm.prank(USER);
+        vm.expectCall(boundIrm, rateAtTargetCall);
+        vm.expectRevert(bytes(""));
+        vault2.deposit(1 ether, USER);
+
+        vm.expectCall(boundIrm, rateAtTargetCall);
+        vm.expectRevert(bytes(""));
+        vault2.totalAssets();
+
+        _pokeAccrue(m);
+        uint256 idleBefore = m.loanToken.balanceOf(address(vault2));
+        vm.prank(USER);
+        vault2.deposit(1 ether, USER);
+        assertEq(m.loanToken.balanceOf(address(vault2)), idleBefore + 1 ether, "control: deposit works after accrual");
     }
 
     /// @dev USER deposits into the vault, the allocator routes it into the Lido market via the adapter, and a

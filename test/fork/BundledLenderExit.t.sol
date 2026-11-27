@@ -26,10 +26,10 @@ abstract contract BundledLenderExitForkBase is ForkMarketStack {
     function setUp() public {
         _fork();
         _bindRole();
-        _skipUnlessArtifact("bundler.toml");
-        bundler3 = IBundler3(_artifactAddr("bundler.toml", "bundler.bundler3"));
-        generalAdapter = _artifactAddr("bundler.toml", "bundler.general_adapter");
-        vaultAdapter = _artifactAddr("bundler.toml", "bundler.vault_adapter");
+        if (forkDeployment.bundler == address(0)) vm.skip(true, "Bundler: absent in this deployment");
+        bundler3 = IBundler3(forkDeployment.bundler);
+        generalAdapter = forkDeployment.generalAdapter;
+        vaultAdapter = forkDeployment.vaultAdapter;
 
         LENDER = _freshActor(deployed, "bundled.lender");
         uint256 deposit = 3 * _loanUnit(deployed) + 4_321;

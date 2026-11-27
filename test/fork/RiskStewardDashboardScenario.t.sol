@@ -46,9 +46,9 @@ contract RiskStewardDashboardScenarioTest is ForkStack {
         m = _bindMarket(market_);
         _pokeAccrue(m); // fold in pending interest so live-config reads and per-borrower asserts are exact
 
-        dashboard = RiskStewardDashboard(_protocol("risk_steward_dashboard"));
+        dashboard = RiskStewardDashboard(forkDeployment.protocol.dashboard);
 
-        STETH = IStETH(_ext("stEth"));
+        STETH = IStETH(forkDeployment.stEth);
         WSTETH = IWstETH(address(m.collateralToken));
 
         // Production wiring, asserted not arranged: the deploy grants the dashboard the controller's

@@ -24,6 +24,15 @@ contract Impl {
 
 contract Impl2 is Impl {}
 
+/// @dev An implementation whose setup call always reverts, to check the upgrade rolls back with it.
+contract RevertingSetupImpl is Impl {
+    error SetupFailed();
+
+    function setup() external pure {
+        revert SetupFailed();
+    }
+}
+
 /// @notice Unit suite for `OssifiableProxy`'s admin surface: the `onlyAdmin` gate (both sides), every `proxy__*`
 ///         mutator and getter, the ossify one-way lock, `receive`, and the inherited ERC-1967 reverts.
 contract OssifiableProxyTest is Test {
@@ -60,6 +69,15 @@ contract OssifiableProxyTest is Test {
         assertEq(Impl(payable(address(p))).value(), 7, "init delegatecall ran");
     }
 
+    /// @dev Deployment announces the implementation and then the admin, as later upgrades and handovers do.
+    function test_constructor_emitsUpgradedThenAdminChanged() public {
+        vm.expectEmit(true, false, false, false);
+        emit IERC1967.Upgraded(address(impl));
+        vm.expectEmit(false, false, false, true);
+        emit IERC1967.AdminChanged(address(0), ADMIN);
+        new OssifiableProxy(address(impl), ADMIN, "");
+    }
+
     function test_constructor_emptyData_skipsInit() public {
         // setUp already deployed with empty data; nothing initialized, but the proxy is live and delegates.
         assertEq(Impl(payable(address(proxy))).value(), 0, "no init ran");
@@ -69,6 +87,11 @@ contract OssifiableProxyTest is Test {
     function test_constructor_revertsOnNonContractImplementation() public {
         vm.expectRevert(abi.encodeWithSelector(ERC1967Utils.ERC1967InvalidImplementation.selector, STRANGER));
         new OssifiableProxy(STRANGER, ADMIN, "");
+    }
+
+    function testRevert_constructor_zeroAdmin() public {
+        vm.expectRevert(abi.encodeWithSelector(ERC1967Utils.ERC1967InvalidAdmin.selector, address(0)));
+        new OssifiableProxy(address(impl), address(0), "");
     }
 
     // ── changeAdmin ──
@@ -89,6 +112,19 @@ contract OssifiableProxyTest is Test {
         proxy.proxy__changeAdmin(STRANGER);
     }
 
+    function test_changeAdmin_previousAdminLosesAccess() public {
+        vm.prank(ADMIN);
+        proxy.proxy__changeAdmin(STRANGER);
+
+        vm.prank(ADMIN);
+        vm.expectRevert(OssifiableProxy.NotAdmin.selector);
+        proxy.proxy__changeAdmin(ADMIN);
+
+        vm.prank(STRANGER);
+        proxy.proxy__changeAdmin(ADMIN); // the new admin holds the gate
+        assertEq(proxy.proxy__getAdmin(), ADMIN, "handed back by the new admin");
+    }
+
     /// @dev Changing the admin to the zero address reverts ERC1967InvalidAdmin (use ossify to relinquish instead).
     function test_changeAdmin_zeroReverts() public {
         vm.prank(ADMIN);
@@ -106,6 +142,12 @@ contract OssifiableProxyTest is Test {
         vm.prank(ADMIN);
         proxy.proxy__upgradeTo(address(impl2));
         assertEq(_impl(proxy), address(impl2), "implementation upgraded");
+    }
+
+    function testRevert_upgradeTo_nonContractImplementation() public {
+        vm.prank(ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(ERC1967Utils.ERC1967InvalidImplementation.selector, STRANGER));
+        proxy.proxy__upgradeTo(STRANGER);
     }
 
     /// @dev A non-admin caller cannot upgrade the implementation; the call reverts NotAdmin.
@@ -135,6 +177,16 @@ contract OssifiableProxyTest is Test {
         vm.prank(ADMIN);
         proxy.proxy__upgradeToAndCall(address(impl2), "");
         assertEq(_impl(proxy), address(impl2), "upgraded, no setup call");
+    }
+
+    function testRevert_upgradeToAndCall_revertingSetup_keepsImplementation() public {
+        RevertingSetupImpl reverting = new RevertingSetupImpl();
+
+        vm.prank(ADMIN);
+        vm.expectRevert(RevertingSetupImpl.SetupFailed.selector);
+        proxy.proxy__upgradeToAndCall(address(reverting), abi.encodeCall(RevertingSetupImpl.setup, ()));
+
+        assertEq(_impl(proxy), address(impl), "the upgrade rolled back with its setup call");
     }
 
     /// @dev A non-admin caller cannot upgrade-and-call; the call reverts NotAdmin.
@@ -176,6 +228,35 @@ contract OssifiableProxyTest is Test {
         vm.prank(ADMIN);
         vm.expectRevert(OssifiableProxy.ProxyIsOssified.selector);
         proxy.proxy__changeAdmin(STRANGER);
+    }
+
+    /// @dev Ossification is final: the former admin can neither ossify again nor upgrade, with or without setup data.
+    function testRevert_afterOssify_ossifyAndUpgradesRevert() public {
+        Impl2 impl2 = new Impl2();
+        vm.prank(ADMIN);
+        proxy.proxy__ossify();
+
+        vm.prank(ADMIN);
+        vm.expectRevert(OssifiableProxy.ProxyIsOssified.selector);
+        proxy.proxy__ossify();
+
+        vm.prank(ADMIN);
+        vm.expectRevert(OssifiableProxy.ProxyIsOssified.selector);
+        proxy.proxy__upgradeTo(address(impl2));
+
+        vm.prank(ADMIN);
+        vm.expectRevert(OssifiableProxy.ProxyIsOssified.selector);
+        proxy.proxy__upgradeToAndCall(address(impl2), "");
+    }
+
+    function test_afterOssify_callsStillDelegate() public {
+        vm.prank(ADMIN);
+        proxy.proxy__ossify();
+
+        Impl(payable(address(proxy))).setValue(5);
+
+        assertEq(Impl(payable(address(proxy))).value(), 5, "the implementation still serves calls");
+        assertEq(_impl(proxy), address(impl), "implementation unchanged");
     }
 
     // ── receive ──

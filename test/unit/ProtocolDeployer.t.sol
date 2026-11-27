@@ -2,13 +2,17 @@
 pragma solidity 0.8.36;
 
 import {Test} from "forge-std/Test.sol";
+import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 import {ILidoLend} from "@lido-lend/src/interfaces/ILidoLend.sol";
+import {IOwnerManager} from "@lido-lend-irm/src/common/IOwnerManager.sol";
 
 import {ExitBookBase} from "../../src/periphery/ExitBookBase.sol";
 import {LidoLendOwner} from "../../src/periphery/LidoLendOwner.sol";
+import {LidoLendMarketFactory} from "../../src/periphery/LidoLendMarketFactory.sol";
+import {RiskStewardDashboard} from "../../src/periphery/RiskStewardDashboard.sol";
+import {OssifiableProxy} from "../../src/proxy/OssifiableProxy.sol";
 import {ProtocolDeployer} from "../../script/lib/ProtocolDeployer.sol";
-import {ExitBookConfig} from "../../script/lib/ExitBookConfigFile.sol";
-import {ProtocolConfig, ProtocolDeployment} from "../../script/lib/ProtocolConfigFile.sol";
+import {ProtocolConfig, ProtocolAddresses, ExitBookConfig} from "../../script/deployment/DeploymentTypes.sol";
 
 contract CircuitBreakerConfigStub {
     address public immutable ADMIN;
@@ -19,7 +23,7 @@ contract CircuitBreakerConfigStub {
 }
 
 contract ProtocolDeployerHarness is ProtocolDeployer {
-    function deployBackbone(ProtocolConfig memory cfg) external returns (ProtocolDeployment memory) {
+    function deployBackbone(ProtocolConfig memory cfg) external returns (ProtocolAddresses memory) {
         return _deployBackbone(cfg, address(this));
     }
 
@@ -74,7 +78,7 @@ contract ProtocolDeployerTest is Test {
             resealManager: makeAddr("resealManager")
         });
 
-        ProtocolDeployment memory deployment = deployer.deployBackbone(cfg);
+        ProtocolAddresses memory deployment = deployer.deployBackbone(cfg);
 
         assertEq(ILidoLend(deployment.core).feeRecipient(), agent);
     }
@@ -88,7 +92,7 @@ contract ProtocolDeployerTest is Test {
             resealManager: makeAddr("resealManager")
         });
 
-        ProtocolDeployment memory deployment = deployer.deployBackbone(cfg);
+        ProtocolAddresses memory deployment = deployer.deployBackbone(cfg);
         LidoLendOwner facade = LidoLendOwner(deployment.ownerFacade);
         bytes32 role = facade.FEE_MANAGER_ROLE();
 
@@ -96,6 +100,40 @@ contract ProtocolDeployerTest is Test {
         assertTrue(facade.hasRole(role, executor));
         assertFalse(facade.hasRole(role, agent));
         assertFalse(facade.hasRole(role, address(deployer)));
+    }
+
+    /// @dev `_deployBackbone` gives all authority to the Agent, the owner facade, and the EVMScriptExecutor, and the
+    ///      deployer keeps none. The owner facade owns the core.
+    function test_deployBackbone_deployerKeepsNoAuthority() external {
+        address agent = makeAddr("agent");
+        ProtocolAddresses memory deployment = deployer.deployBackbone(
+            ProtocolConfig({
+                agent: agent,
+                evmScriptExecutor: executor,
+                circuitBreaker: address(new CircuitBreakerConfigStub(executor)),
+                resealManager: makeAddr("resealManager")
+            })
+        );
+
+        assertEq(OssifiableProxy(payable(deployment.core)).proxy__getAdmin(), agent, "core proxy admin");
+        assertEq(OssifiableProxy(payable(deployment.irmRouter)).proxy__getAdmin(), agent, "router proxy admin");
+        assertEq(ILidoLend(deployment.core).owner(), deployment.ownerFacade, "core owner");
+        assertEq(IOwnerManager(deployment.irmRouter).owner(), agent, "router owner");
+        assertEq(IOwnerManager(deployment.irmRouter).manager(), executor, "router manager");
+        assertEq(IOwnerManager(deployment.adaptiveCurveIrm).owner(), agent, "adaptive IRM owner");
+        assertEq(IOwnerManager(deployment.adaptiveCurveIrm).manager(), executor, "adaptive IRM manager");
+        assertEq(LidoLendMarketFactory(deployment.factory).ADMIN(), agent, "factory admin");
+
+        LidoLendOwner facade = LidoLendOwner(deployment.ownerFacade);
+        _assertSoleMember(address(facade), facade.DEFAULT_ADMIN_ROLE(), agent);
+        _assertSoleMember(address(facade), facade.MARKET_CREATOR_ROLE(), executor);
+        _assertSoleMember(address(facade), facade.MARKET_MANAGER_ROLE(), executor);
+        _assertSoleMember(address(facade), facade.GUARDIAN_MANAGER_ROLE(), executor);
+        _assertSoleMember(address(facade), facade.FEE_MANAGER_ROLE(), executor);
+
+        RiskStewardDashboard dashboard = RiskStewardDashboard(deployment.dashboard);
+        _assertSoleMember(address(dashboard), dashboard.DEFAULT_ADMIN_ROLE(), agent);
+        _assertSoleMember(address(dashboard), dashboard.STEWARD_ADMIN_ROLE(), executor);
     }
 
     function test_deployExitBooks_assignsPauserAndLeavesResumerEmpty() external {
@@ -107,13 +145,13 @@ contract ProtocolDeployerTest is Test {
         _assertExitBookPauseRoles(ExitBookBase(erc4626), pauser);
     }
 
-    function test_deployExitBooks_assignsFeeManagerToExecutorOnly() external {
+    function test_deployExitBooks_handsOverRolesAndInitializesZeroFee() external {
         ExitBookConfig memory cfg = _exitBookConfig(makeAddr("exitBookPauser"));
 
         (address morpho, address erc4626) = deployer.deployExitBooks(cfg);
 
-        _assertExitBookFeeManager(ExitBookBase(morpho), cfg);
-        _assertExitBookFeeManager(ExitBookBase(erc4626), cfg);
+        _assertExitBookHandover(ExitBookBase(morpho), cfg);
+        _assertExitBookHandover(ExitBookBase(erc4626), cfg);
     }
 
     function testRevert_deployExitBooks_missingPauser() external {
@@ -150,16 +188,28 @@ contract ProtocolDeployerTest is Test {
         });
     }
 
+    function _assertSoleMember(address target, bytes32 role, address member) private view {
+        IAccessControlEnumerable access = IAccessControlEnumerable(target);
+        assertEq(access.getRoleMemberCount(role), 1, "one role member");
+        assertEq(access.getRoleMember(role, 0), member, "role member");
+        assertFalse(access.hasRole(role, address(deployer)), "deployer holds no role");
+    }
+
     function _assertExitBookPauseRoles(ExitBookBase book, address pauser) private view {
         assertEq(book.getRoleMemberCount(book.PAUSER_ROLE()), 1);
         assertTrue(book.hasRole(book.PAUSER_ROLE(), pauser));
         assertEq(book.getRoleMemberCount(book.RESUMER_ROLE()), 0);
     }
 
-    function _assertExitBookFeeManager(ExitBookBase book, ExitBookConfig memory cfg) private view {
-        assertEq(book.getRoleMemberCount(book.FEE_MANAGER_ROLE()), 1);
-        assertTrue(book.hasRole(book.FEE_MANAGER_ROLE(), cfg.evmScriptExecutor));
-        assertFalse(book.hasRole(book.FEE_MANAGER_ROLE(), cfg.agent));
-        assertFalse(book.hasRole(book.FEE_MANAGER_ROLE(), address(deployer)));
+    function _assertExitBookHandover(ExitBookBase book, ExitBookConfig memory cfg) private view {
+        assertEq(book.getRoleMemberCount(book.DEFAULT_ADMIN_ROLE()), 1);
+        assertTrue(book.hasRole(book.DEFAULT_ADMIN_ROLE(), cfg.agent));
+        assertEq(book.getRoleMemberCount(book.ALLOWLIST_MANAGER_ROLE()), 1);
+        assertTrue(book.hasRole(book.ALLOWLIST_MANAGER_ROLE(), cfg.evmScriptExecutor));
+        assertEq(book.getRoleMemberCount(book.FEE_MANAGER_ROLE()), 0);
+        assertEq(book.getRoleMemberCount(book.RECOVERER_ROLE()), 0);
+        assertEq(book.feeRecipient(), cfg.agent);
+        assertEq(book.serviceFee(), 0);
+        _assertExitBookPauseRoles(book, cfg.pauser);
     }
 }

@@ -1,6 +1,8 @@
 name: ci
 
 on:
+  push:
+    branches: [refactor/solidity-deployment, main, develop]
   workflow_dispatch:
 
 permissions:
@@ -23,15 +25,13 @@ jobs:
 
       - uses: ./.github/actions/repo-setup
 
-      # Only src and the Bundler3 anchor: test harnesses and handlers exceed EIP-170 by design, and the
-      # tests deploy Bundler3 from the artifact the anchor produces.
       - name: build (with sizes)
-        run: forge build src script/Bundler3Anchor.sol --sizes
+        run: make sizes
 
       - name: lint
         run: make lint
 
-      - name: test (local, excludes test/fork/)
+      - name: local tests
         run: make test-local
 
   fork:
@@ -46,12 +46,14 @@ jobs:
 
       - uses: ./.github/actions/repo-setup
 
-      - name: provision a fork deployment
+      - name: integrations and acceptance on a Forge fork
         env:
           RPC_URL: ${{ secrets.RPC_URL }}
         run: |
           test -n "$RPC_URL" || { echo "::error::RPC_URL secret required for the fork job"; exit 1; }
-          make provision-fork
+          make test-fork
 
-      - name: fork tests (against the provisioned deployment)
-        run: make test-fork RPC_URL=http://127.0.0.1:8545 ARTIFACTS_DIR=fork
+      - name: deployment and preparation scenarios on a Forge fork
+        env:
+          RPC_URL: ${{ secrets.RPC_URL }}
+        run: make test-deployment

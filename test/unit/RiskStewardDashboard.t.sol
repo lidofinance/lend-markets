@@ -107,6 +107,15 @@ contract RiskStewardDashboardTest is Test {
         dashboard.addMarketSteward(marketId, steward);
     }
 
+    function test_constructor_onlyAdminHoldsAdminRole() public {
+        address admin = makeAddr("dashboardAdmin");
+        RiskStewardDashboard fresh = new RiskStewardDashboard(admin, ILidoLend(address(core)));
+        bytes32 adminRole = fresh.DEFAULT_ADMIN_ROLE();
+        assertEq(fresh.getRoleMemberCount(adminRole), 1, "one admin");
+        assertEq(fresh.getRoleMember(adminRole, 0), admin, "the admin passed in");
+        assertEq(fresh.getRoleMemberCount(fresh.STEWARD_ADMIN_ROLE()), 0, "no steward admin yet");
+    }
+
     // ---
     // Stewards
     // ---
@@ -268,6 +277,20 @@ contract RiskStewardDashboardTest is Test {
         dashboard.increaseActivationDelays(unknownMarketId, 5 minutes, 2 hours, 1 days);
     }
 
+    /// @dev The other levers that read the controller revert the same way.
+    function testRevert_unknownMarket_everyOtherConfigLever() public {
+        dashboard.addMarketSteward(unknownMarketId, steward);
+        bytes memory expected = abi.encodeWithSelector(IRiskStewardDashboard.UnknownMarket.selector, unknownMarketId);
+        vm.startPrank(steward);
+        vm.expectRevert(expected);
+        dashboard.increaseActivatingLockDuration(unknownMarketId, 2 hours);
+        vm.expectRevert(expected);
+        dashboard.increaseMinDepositAmount(unknownMarketId, 2 ether);
+        vm.expectRevert(expected);
+        dashboard.revokeInstantActivation(unknownMarketId, address(0xCAFE));
+        vm.stopPrank();
+    }
+
     // ---
     // increaseActivatingLockDuration
     // ---
@@ -289,6 +312,18 @@ contract RiskStewardDashboardTest is Test {
         vm.prank(steward);
         vm.expectRevert(IRiskStewardDashboard.NotTightened.selector);
         dashboard.increaseActivatingLockDuration(marketId, 30 minutes);
+    }
+
+    function test_increaseActivatingLockDuration_equalDuration_accepted() public {
+        vm.prank(steward);
+        dashboard.increaseActivatingLockDuration(marketId, 1 hours);
+        assertEq(controller.collateralActivationConfig().activatingLockDuration, 1 hours, "lock duration held");
+    }
+
+    function testRevert_increaseActivatingLockDuration_notSteward() public {
+        vm.prank(makeAddr("stranger"));
+        vm.expectRevert(IRiskStewardDashboard.NotMarketSteward.selector);
+        dashboard.increaseActivatingLockDuration(marketId, 2 hours);
     }
 
     // ---
@@ -353,12 +388,15 @@ contract RiskStewardDashboardTest is Test {
         dashboard.addMarketSteward(marketId, address(0));
     }
 
+    /// @dev A repeated `addMarketSteward` call by `STEWARD_ADMIN_ROLE` emits no event. The setup already appoints
+    ///      `steward`.
     function test_addMarketSteward_reAddEmitsNothing() public {
         vm.recordLogs();
         dashboard.addMarketSteward(marketId, steward);
         assertEq(vm.getRecordedLogs().length, 0, "no event on a no-op re-add");
     }
 
+    /// @dev A `removeMarketSteward` call by `STEWARD_ADMIN_ROLE` for an address that is not a steward emits no event.
     function test_removeMarketSteward_nonStewardEmitsNothing() public {
         vm.recordLogs();
         dashboard.removeMarketSteward(marketId, address(0xBEEF));
@@ -372,8 +410,10 @@ contract RiskStewardDashboardTest is Test {
         assertFalse(dashboard.isMarketSteward(marketId, steward), "steward removed");
     }
 
+    /// @dev A `revokeInstantActivation` call by a market steward emits `InstantActivationRevoked`.
     function test_revokeInstantActivation_emitsEvent() public {
         address caller = address(0xCA11E7);
+        controller.setInstantActivation(caller, true);
         vm.expectEmit(true, true, false, true);
         emit IRiskStewardDashboard.InstantActivationRevoked(marketId, caller);
         vm.prank(steward);
@@ -381,11 +421,15 @@ contract RiskStewardDashboardTest is Test {
         assertFalse(controller.instantActivation(caller), "controller revoke called");
     }
 
+    /// @dev Same issue as `test_constructor_zeroCoreReverts` in `test/unit/LidoLendMarketController.t.sol`; this test
+    ///      covers a zero admin in the `RiskStewardDashboard` constructor.
     function test_constructor_zeroAdminReverts() public {
         vm.expectRevert(IRiskStewardDashboard.ZeroAddress.selector);
         new RiskStewardDashboard(address(0), ILidoLend(address(core)));
     }
 
+    /// @dev Same issue as `test_constructor_zeroCoreReverts` in `test/unit/LidoLendMarketController.t.sol`; this test
+    ///      covers a zero core in the `RiskStewardDashboard` constructor.
     function test_constructor_zeroCoreReverts() public {
         vm.expectRevert(IRiskStewardDashboard.ZeroAddress.selector);
         new RiskStewardDashboard(address(this), ILidoLend(address(0)));

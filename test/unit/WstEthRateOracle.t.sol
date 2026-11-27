@@ -18,6 +18,17 @@ contract MockWstETH {
     }
 }
 
+/// @dev wstETH as Lido computes it, `amount * totalPooledEther / totalShares` floored, over a ratio a 1e18 query
+///      cannot represent in full.
+contract ShareRatioWstETH {
+    uint256 public constant TOTAL_POOLED_ETHER = 1_150_000_000_000_000_000_001;
+    uint256 public constant TOTAL_SHARES = 1e21;
+
+    function getStETHByWstETH(uint256 wstETHAmount) external pure returns (uint256) {
+        return wstETHAmount * TOTAL_POOLED_ETHER / TOTAL_SHARES;
+    }
+}
+
 /// @notice Unit/fuzz for `WstEthRateOracle`: a Morpho IOracle adapter returning
 ///         the wstETH->stETH rate at the 1e36 query point, scaled to 1e36 (loan WETH 18, collateral wstETH
 ///         18 -> 36+18-18). Recomputed independently from `stEthPerToken`. Deployed directly (immutable
@@ -47,6 +58,17 @@ contract WstEthRateOracleTest is Test {
         // price = getStETHByWstETH(1e36) = 1e36 * 1.15e18 / 1e18 = 1.15e36.
         assertEq(oracle.price(), uint256(1e36) * 1.15e18 / 1e18, "price = rate scaled to 1e36");
         assertEq(oracle.price(), 1.15e36, "explicit value");
+    }
+
+    /// @dev The rate is 1.15 + 1e-21: a 1e18 query floors the tail away, the 1e36 query keeps 1e15 of it.
+    function test_price_1e36Query_keepsDigitsA1e18QueryFloors() public {
+        ShareRatioWstETH ratio = new ShareRatioWstETH();
+        WstEthRateOracle precise = new WstEthRateOracle(address(ratio));
+        uint256 expected = uint256(1e36) * ratio.TOTAL_POOLED_ETHER() / ratio.TOTAL_SHARES();
+
+        assertEq(precise.price(), expected, "price = 1e36 * pooled / shares");
+        assertEq(precise.price(), 1.15e36 + 1e15, "explicit value");
+        assertEq(ratio.getStETHByWstETH(1e18) * 1e18, 1.15e36, "a scaled 1e18 query loses the tail");
     }
 
     /// @dev Across a realistic rate band, price equals the rate scaled to 1e36.

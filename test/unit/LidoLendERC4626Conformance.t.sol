@@ -3,6 +3,7 @@ pragma solidity 0.8.36;
 
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 
 import {ILidoLendERC4626} from "../../src/interfaces/ILidoLendERC4626.sol";
 import {LidoLendMarketController} from "../../src/controllers/LidoLendMarketController.sol";
@@ -157,17 +158,26 @@ contract LidoLendERC4626ConformanceTest is LidoLendSetup {
         assertLe(out, assets, "no free profit: deposit -> redeem returns no more than put in");
     }
 
+    /// @dev Mint `shares`, then withdraw the whole `maxWithdraw`. `withdraw` returns the shares it burns, so the
+    ///      bound is measured in the loan tokens the mint pulled and the withdraw paid out.
     function testFuzz_roundTrip_mintWithdraw_noFreeProfit(uint256 shares) public {
         shares = bound(shares, 1, 1_000_000 ether);
         uint256 cost = _v().previewMint(shares);
         _fundApprove(alice, cost);
 
+        uint256 balanceBeforeMint = _m().loanToken.balanceOf(alice);
         vm.startPrank(alice);
         _v().mint(shares, alice);
-        uint256 back = _v().withdraw(_v().maxWithdraw(alice), alice, alice);
+        uint256 balanceAfterMint = _m().loanToken.balanceOf(alice);
+        uint256 assetsOut = _v().maxWithdraw(alice);
+        uint256 burned = _v().withdraw(assetsOut, alice, alice);
         vm.stopPrank();
 
-        assertLe(back, cost, "no free profit: mint then withdraw returns no more than the mint cost");
+        uint256 paid = balanceBeforeMint - balanceAfterMint;
+        uint256 received = _m().loanToken.balanceOf(alice) - balanceAfterMint;
+        assertEq(received, assetsOut, "withdraw pays the requested assets");
+        assertLe(received, paid, "no free profit: the withdraw pays out no more loan tokens than the mint pulled");
+        assertEq(_v().balanceOf(alice), shares - burned, "the withdraw burns exactly the shares it returns");
     }
 
     // ── G5: preview rounding direction — mint/withdraw round UP, deposit/redeem round DOWN ──
@@ -267,7 +277,11 @@ contract LidoLendERC4626ConformanceTest is LidoLendSetup {
 
         // One past the cap reverts; exactly the cap succeeds.
         vm.prank(alice);
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ERC4626Upgradeable.ERC4626ExceededMaxRedeem.selector, alice, capShares + 1, capShares
+            )
+        );
         _v().redeem(capShares + 1, alice, alice);
 
         vm.prank(alice);
@@ -370,11 +384,16 @@ contract LidoLendERC4626ConformanceTest is LidoLendSetup {
         _assertViewsNeverRevert();
 
         _fundApprove(alice, 10 ether);
+        // The vault's own max* gate rejects each flow first: paused, it reports a zero max.
         vm.prank(alice);
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxDeposit.selector, alice, 10 ether, 0)
+        );
         _v().deposit(10 ether, alice);
         vm.prank(alice);
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxWithdraw.selector, alice, 1 ether, 0)
+        );
         _v().withdraw(1 ether, alice, alice);
 
         // A disabled flow makes its max the amount that would not revert: zero.
@@ -400,7 +419,7 @@ contract LidoLendERC4626ConformanceTest is LidoLendSetup {
         vm.prank(bob);
         _v().deposit(headroom, bob);
         vm.prank(bob);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxDeposit.selector, bob, 1, 0));
         _v().deposit(1, bob);
     }
 }
