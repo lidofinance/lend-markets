@@ -367,7 +367,7 @@ The fork tests read these mainnet sources:
 
 | Source | Address | Collateral |
 |---|---|---|
-| Ondo's USDY oracle | `0xA0219AA5B31e65Bc920B5b6DFb8EdF0988121De0` | USDY |
+| Ondo's `USDYOracleWrapper` | `0x87b126e5518b6a1Bb8465779b4607C45C643DF90` | USDY |
 | Centrifuge JTRSY/USDC vault | `0xFE6920eB6C421f1179cA8c8d4170530CDBdfd77A` | JTRSY |
 | Centrifuge JAAA/USDC vault | `0x4880799eE5200fC58DA299e965df644fBf46780B` | JAAA |
 | Centrifuge deJTRSY/USDC vault | `0x18Ab9fC0B2e4Fef9e0e03c8EC63BA287a3238257` | deJTRSY |

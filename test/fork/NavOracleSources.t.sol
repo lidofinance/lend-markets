@@ -27,7 +27,7 @@ interface IChronicleToll {
 contract NavOracleSourcesTest is ForkStack {
     address internal constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     address internal constant USDY = 0x96F6eF951840721AdBF46Ac996b59E0235CB985C;
-    address internal constant ONDO_USDY_ORACLE = 0xA0219AA5B31e65Bc920B5b6DFb8EdF0988121De0;
+    address internal constant ONDO_USDY_ORACLE = 0x87b126e5518b6a1Bb8465779b4607C45C643DF90;
 
     address internal constant JTRSY = 0x8c213ee79581Ff4984583C6a801e5263418C4b86;
     address internal constant JAAA = 0x5a0F93D040De44e78F251b03c43be9CF317Dcf64;
