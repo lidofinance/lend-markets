@@ -14,6 +14,7 @@ These documents explain system behavior, cross-contract rules, formulas, invaria
 - [lender-settlement.md](lender-settlement.md) — direct and vault settlement, lender exits, queue policy, budgets, and rounding boundaries.
 - [exit-books.md](exit-books.md) — request lifecycle, exact-asset fill accounting, external liquidity composition, and the filler workflow.
 - [roles.md](roles.md) — every privileged action mapped to its role, class, and intended holder.
+- [easy-track.md](easy-track.md) — the Easy Track motions the Lend Operational Committee runs, the governance routes around them, and their effects on Dual Governance.
 - [trailing-anchor-oracle.md](trailing-anchor-oracle.md) — the Trailing Anchor Oracle, which passes its source's price only near a trailing anchor and lets a larger move through only after a delay.
 - [WETH / wstETH](markets/eth-steth.md) and [USDY / Stablecoin Markets](markets/stables-usdy.md) — market-specific assets, oracle assumptions, transfer constraints, and parameters.
 

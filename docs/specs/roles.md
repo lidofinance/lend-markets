@@ -15,7 +15,7 @@ The tables cover the integrated production deployment and its production prerequ
 | Registered controller pauser | An address registered for one target through CircuitBreaker; the registration is distinct from CircuitBreaker's immutable admin authority. |
 | Reseal Manager | A contract of the Dual Governance system that initially holds `PAUSER_ROLE` and `RESUMER_ROLE` on every controller. It uses them only on a call from Dual Governance, to make a running finite pause indefinite or to resume a paused controller. |
 
-The contracts see these addresses, not the governance process that controls them. Lido DAO Voting, Dual Governance, and EasyTrack are intended execution routes; their ownership, motion factories, delays, and objection rules are outside this repository's deployment and acceptance checks. An EasyTrack motion may execute through EVMScriptExecutor, but possession of an executor role does not prove that a bounded motion factory exists for that action.
+The contracts see these addresses, not the governance process that controls them. Lido DAO Voting, Dual Governance, and EasyTrack are intended execution routes; their ownership, motion factories, delays, and objection rules are outside this repository's deployment and acceptance checks. An EasyTrack motion may execute through EVMScriptExecutor, but possession of an executor role does not prove that a bounded motion factory exists for that action. The factories, and the routes that reach executor roles without a motion, are specified in [Easy Track Factories](easy-track.md).
 
 ## Impact classification
 
@@ -62,7 +62,7 @@ The production deployment uses one CircuitBreaker instance for its controllers. 
 A successful pause consumes that controller registration. CircuitBreaker does not validate a target or its pause permission when registration is written. The registered pauser cannot configure CircuitBreaker or resume the controller. The admin cannot exceed the immutable duration bounds or pause through CircuitBreaker without a live registration.
 
 > [!NOTE]
-> **Pauses can be chained.** After a pause, the CircuitBreaker `ADMIN` can register a new pauser, so a chain of pauses can keep a market's exits blocked for longer than one pause. Each registration goes through an EasyTrack motion that LDO holders can object to.
+> **Pauses can be chained.** During or after a pause, the CircuitBreaker `ADMIN` can register a new pauser, so a chain of pauses can keep a market's exits blocked for longer than one pause. A registration made by an EasyTrack motion can be rejected by LDO holders' objections. Aragon Voting owns EVMScriptExecutor and can register a pauser without a motion or Dual Governance ([Easy Track Factories](easy-track.md#known-properties), K9).
 
 ## Interest-rate management
 
@@ -115,7 +115,7 @@ Neither the facade nor the core requires factory-produced components or the stan
 
 These roles are granted before market creation, but the facade and dashboard cannot resolve this controller until market activation binds it in the core. Market activation does not change the role sets. No caller is enabled for instant collateral activation initially.
 
-The initial topology has one unfreeze path through `LidoLendOwner`. A CircuitBreaker pause normally ends when its duration expires. The Reseal Manager acts only on a call from Dual Governance. Its Reseal Committee can make a running finite pause indefinite in any Dual Governance state except Normal. Its Tiebreaker Committee can resume a paused controller only in a tie, which cannot occur in the Normal state. In the Normal state a finite pause therefore runs to its expiry and an indefinite one stays in place. As controller admin, the Agent can later change any of these role assignments.
+The initial topology has one unfreeze path through `LidoLendOwner`. A CircuitBreaker pause normally ends when its duration expires. The Reseal Manager acts only on a call from Dual Governance. The Dual Governance Reseal Committee can have it make a running finite pause indefinite in any Dual Governance state except Normal. The Tiebreaker Committee can have it resume a paused controller only in a tie, which cannot occur in the Normal state. In the Normal state, without a Dual Governance proposal, a finite pause therefore runs to its expiry and an indefinite one stays in place. As controller admin, the Agent can later change any of these role assignments.
 
 ### `RiskStewardDashboard`
 
