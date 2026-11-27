@@ -96,8 +96,8 @@ The examples use illustrative values, not any market's: bounds of +0.05% and −
 |---|---|---|---|
 | `maxPriceAboveAnchor` | `uint64`, WAD fraction | `0 < x < 1e18` | upper bound above the anchor |
 | `maxPriceBelowAnchor` | `uint64`, WAD fraction | `0 < x < 1e18` | lower bound below the anchor |
-| `maxAnchorContinuousRiseRate` | `uint64`, WAD continuous rate a year | `0 ≤ x ≤ 1e18` | how fast a drift may raise the anchor; zero stops it. In a year the anchor rises at most `e^x − 1`: 6.18% at `0.06e18`, for any schedule of updates |
-| `maxAnchorContinuousFallRate` | `uint64`, WAD continuous rate a year | `0 ≤ x ≤ 1e18` | how fast a drift may lower the anchor; zero stops it. In a year the anchor falls at most `1 − e^(−x)`: 0.995% at `0.01e18`, for any schedule of updates |
+| `maxAnchorContinuousRiseRate` | `uint64`, WAD continuous rate a year | `0 ≤ x ≤ 1e18` | how fast a drift may raise the anchor; zero stops it. In a year the anchor rises at most `e^x − 1`: 6.18% at `0.06e18`, for any schedule of updates; how far it actually moves depends on the schedule |
+| `maxAnchorContinuousFallRate` | `uint64`, WAD continuous rate a year | `0 ≤ x ≤ 1e18` | how fast a drift may lower the anchor; zero stops it. In a year the anchor falls at most `1 − e^(−x)`: 0.995% at `0.01e18`, for any schedule of updates; how far it actually moves depends on the schedule |
 | `maxAnchorBelowBase` | `uint64`, WAD fraction | `0 ≤ x < 1e18` | how far below `basePrice` updates may take the anchor; zero stops every update from lowering it below that |
 | `maxAnchorAboveBase` | `uint64`, WAD fraction | `0 ≤ x < 1e18` | how far above `basePrice` a re-anchor may take the anchor; zero stops every re-anchor from raising it above that |
 | `reanchorDelay` | `uint40`, seconds | `x ≥ MIN_REANCHOR_DELAY` (1 hour), `e^(maxAnchorContinuousRiseRate × x / (1e18 × 365 days)) − 1 ≤ maxPriceAboveAnchor / 1e18` and `1 − e^(−maxAnchorContinuousFallRate × x / (1e18 × 365 days)) ≤ maxPriceBelowAnchor / 1e18` | how long a pending anchor waits before a re-anchor |
@@ -194,7 +194,7 @@ When the target equals `A`, nothing changes. Otherwise the anchor moves onto the
 
 What follows:
 
-- A drift counts the time since the anchor was last set, and nothing compounds within one block. The rise is compounded continuously, so the update schedule changes the rise in a given time only by rounding and by the three-term sum. At a rate of 0.06, one update after a year gives 6.1836%, and frequent updates give up to 6.18365%. The fall is compounded continuously in the same way. At a rate of 0.01, one update after a year and frequent updates both give a fall of 0.995%. It moves toward a price within the bounds, so a long rest builds a reach of at most one bound.
+- A drift counts the time since the anchor was last set, and nothing compounds within one block. The rise is compounded continuously, so the update schedule changes the largest rise in a given time only by rounding and by the three-term sum. At a rate of 0.06, one update after a year gives 6.1836%, and frequent updates give up to 6.18365%. The fall is compounded continuously in the same way. At a rate of 0.01, one update after a year and frequent updates both give a fall of 0.995%. A drift that stops at the price still sets the anchor, so the unused rise or fall is lost, and where the anchor stands depends on when updates run. It moves toward a price within the bounds, so a long rest builds a reach of at most one bound.
 - The hold is sampled only when an update runs. A price that clears up and returns to the same side between two updates keeps the pending anchor, and one that leaves the bounds and comes back between them leaves no trace.
 
 ## Setup and privileged actions

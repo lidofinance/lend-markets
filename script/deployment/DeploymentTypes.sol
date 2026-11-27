@@ -94,8 +94,8 @@ enum TrailingAnchorKind {
 
 /// @dev A trailing anchor oracle of a market: the adapter and its source, the market's tokens, the parameters at
 ///      launch and the range that the seed price must be in. For the Centrifuge adapter, `source` is the vault of the
-///      collateral token, and `maxPriceAge` is the age of the share price; for the Chainlink adapter, `source` is the
-///      feed, and `maxPriceAge` is the age of the feed's value.
+///      collateral token, and `maxPriceAge` is the age of the vault's price stamp; for the Chainlink adapter, `source`
+///      is the feed, and `maxPriceAge` is the age of the feed's value.
 struct TrailingAnchorPriceFeedSpec {
     TrailingAnchorKind kind;
     address source;
