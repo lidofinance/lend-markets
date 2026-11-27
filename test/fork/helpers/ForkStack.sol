@@ -109,6 +109,13 @@ abstract contract ForkStack is Test {
         console2.log("[fork] block:", block.number);
     }
 
+    /// @dev How far the fork's clock runs ahead of the host's, in seconds, as on a node that moved its time forward to
+    ///      execute a vote. Off-chain price sources post nothing there, so their stamps age by the whole lead.
+    function _forkClockLead() internal view returns (uint256) {
+        uint256 hostTime = vm.unixTime() / 1000;
+        return block.timestamp > hostTime ? block.timestamp - hostTime : 0;
+    }
+
     function _useDeployment(DeploymentSnapshot memory result) internal {
         forkDeployment.protocol = result.protocol;
         forkDeployment.circuitBreakerParameters = result.circuitBreakerParameters;

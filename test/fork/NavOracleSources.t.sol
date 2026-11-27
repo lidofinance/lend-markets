@@ -23,7 +23,8 @@ interface IChronicleToll {
 }
 
 /// @notice Each NAV adapter over its live mainnet source. The unit suites use mocks of the sources, so only these
-///         tests show that an adapter reads the source that a deployment gives it.
+///         tests show that an adapter reads the source that a deployment gives it. They skip off mainnet. On a fork
+///         whose clock runs ahead of the host's, every stamp is older by the lead, and the age limits grow by it.
 contract NavOracleSourcesTest is ForkStack {
     address internal constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     address internal constant USDY = 0x96F6eF951840721AdBF46Ac996b59E0235CB985C;
@@ -66,6 +67,7 @@ contract NavOracleSourcesTest is ForkStack {
 
     function setUp() public {
         _selectSourceFork();
+        if (block.chainid != 1) vm.skip(true, "NavOracleSources: the sources are on mainnet");
     }
 
     /// @dev USDY has 18 decimals and USDC has 6, so the price is the Ondo value times 1e6.
@@ -80,7 +82,7 @@ contract NavOracleSourcesTest is ForkStack {
     }
 
     /// @dev JTRSY and USDC have 6 decimals: the adapter converts 10^18 JTRSY units, and the price is that value times
-    ///      1e18. The seed reverts if the vault's price stamp is older than `MAX_PRICE_AGE`.
+    ///      1e18. The seed reverts if the vault's price stamp is older than `MAX_PRICE_AGE` plus the fork's clock lead.
     function test_centrifugeNavOracle_readsTheJtrsyVault() public {
         _assertVaultSeeds(JTRSY_USDC_VAULT, JTRSY, 6);
     }
@@ -110,7 +112,7 @@ contract NavOracleSourcesTest is ForkStack {
         assertLe(nav, MAX_NAV, "vault value above an 18-decimal NAV");
 
         _assertSeededFrom(
-            address(new CentrifugeNavOracle(vault, MAX_PRICE_AGE, USDC, share)),
+            address(new CentrifugeNavOracle(vault, MAX_PRICE_AGE + _forkClockLead(), USDC, share)),
             nav,
             10 ** (24 - uint256(shareDecimals))
         );
@@ -133,7 +135,7 @@ contract NavOracleSourcesTest is ForkStack {
     }
 
     function _assertChronicleSeeds(address feed, address router, address share, address vault) internal {
-        ChainlinkOracle impl = new ChainlinkOracle(feed, MAX_FEED_AGE, USDC, share);
+        ChainlinkOracle impl = new ChainlinkOracle(feed, MAX_FEED_AGE + _forkClockLead(), USDC, share);
         address proxy = vm.computeCreateAddress(address(this), vm.getNonce(address(this)));
         try this.deployOracle(address(impl)) {
             revert("the proxy deployed before the whitelist");
@@ -155,7 +157,9 @@ contract NavOracleSourcesTest is ForkStack {
 
     /// @dev `reader` reads the feed for the expected value: a caller the feed answers.
     function _assertFeedSeeds(address feed, address share, address vault, address reader) internal {
-        _assertSeedsFromFeed(new ChainlinkOracle(feed, MAX_FEED_AGE, USDC, share), share, vault, reader);
+        _assertSeedsFromFeed(
+            new ChainlinkOracle(feed, MAX_FEED_AGE + _forkClockLead(), USDC, share), share, vault, reader
+        );
     }
 
     /// @dev The oracle over `impl` seeds from the feed's answer at 18 decimals, and that price is within
