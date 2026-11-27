@@ -2,21 +2,25 @@ name: pending-action
 
 # Pre-signing validation of a pending multisig action: fork the live network, apply the
 # transaction(s) from script/config/<config>/pending.toml, then verify the resulting state with state-mate
-# and the fork suites. Dispatch it on the branch that carries the pending calldata; a green run
-# is the signing gate.
+# and the fork suites. Every PR validates mainnet; manual runs can also select Hoodi.
 
 on:
+  pull_request:
   workflow_dispatch:
     inputs:
       config:
-        description: "deployment under script/config/ (its pending.toml and state-mate/ are used)"
+        description: "network for the pending transaction and fork"
+        type: choice
+        options:
+          - hoodi-testnet
+          - mainnet
         default: "hoodi-testnet"
       state_mate_config:
-        description: "state-mate config file name under script/config/<config>/state-mate/"
-        default: "live.yaml"
+        description: "Hoodi State Mate file; mainnet checks the full deployment directory"
+        type: string
       deployment_run:
-        description: "run under script/deployment/ containing artifacts/Deployment.sol for the fork suites"
-        default: "hoodi-testnet"
+        description: "deployment under deployed/ for the fork suites (defaults to the selected network)"
+        type: string
 
 permissions:
   contents: read
@@ -27,36 +31,38 @@ concurrency:
 
 jobs:
   guard:
-    name: pending action present
+    name: select pending validation
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      has_pending: ${{ steps.check.outputs.has_pending }}
+      should_validate: ${{ steps.check.outputs.should_validate }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
 
       - id: check
-        name: look for an active [[transaction]]
+        name: always validate mainnet, check Hoodi for pending actions
+        env:
+          CONFIG: ${{ inputs.config || 'mainnet' }}
         run: |
-          if grep -qE '^\[\[transaction\]\]' "script/config/${{ inputs.config }}/pending.toml"; then
-            echo "has_pending=true" >> "$GITHUB_OUTPUT"
+          if [[ "$CONFIG" == mainnet ]] || grep -qE '^\[\[transaction\]\]' "script/config/$CONFIG/pending.toml"; then
+            echo "should_validate=true" >> "$GITHUB_OUTPUT"
           else
-            echo "has_pending=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::no active [[transaction]] in script/config/${{ inputs.config }}/pending.toml — nothing to validate"
+            echo "should_validate=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no active [[transaction]] in script/config/$CONFIG/pending.toml — nothing to validate"
           fi
 
   validate:
     name: apply pending action + state-mate + fork tests
     needs: guard
-    if: needs.guard.outputs.has_pending == 'true'
+    if: needs.guard.outputs.should_validate == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      CONFIG: ${{ inputs.config }}
-      STATE_MATE_CONFIG: ${{ inputs.state_mate_config }}
-      DEPLOYMENT_RUN: ${{ inputs.deployment_run }}
+      CONFIG: ${{ inputs.config || 'mainnet' }}
+      STATE_MATE_CONFIG: ${{ inputs.state_mate_config || 'live.yaml' }}
+      DEPLOYMENT_RUN: ${{ inputs.deployment_run || inputs.config || 'mainnet' }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -67,9 +73,9 @@ jobs:
 
       - name: apply the pending action on a fork of the live network
         env:
-          RPC_URL: ${{ secrets.HOODI_RPC_URL }}
+          RPC_URL: &upstream_rpc ${{ secrets[inputs.config == 'hoodi-testnet' && 'HOODI_RPC_URL' || 'RPC_URL'] || (inputs.config != 'hoodi-testnet' && 'https://ethereum-rpc.publicnode.com') || '' }}
         run: |
-          test -n "$RPC_URL" || { echo "::error::HOODI_RPC_URL secret required"; exit 1; }
+          test -n "$RPC_URL" || { echo "::error::missing RPC secret for $CONFIG"; exit 1; }
           make apply-pending CONFIG="$CONFIG"
           # anvil keeps running on :8545 with the pending state applied
 
@@ -88,13 +94,36 @@ jobs:
         working-directory: .state-mate
         env:
           HOODI_RPC_URL: http://127.0.0.1:8545
+          MAINNET_RPC_URL: http://127.0.0.1:8545
+          ETHERSCAN_TOKEN: ${{ secrets.ETHERSCAN_API_KEY }}
+          ETHERSCAN_EXPLORER_TOKEN: ${{ secrets.ETHERSCAN_API_KEY }}
         run: |
           corepack enable
           yarn install --immutable
-          yarn start "$GITHUB_WORKSPACE/script/config/$CONFIG/state-mate/$STATE_MATE_CONFIG"
+          if [[ "$CONFIG" == mainnet ]]; then
+            config_dir="$GITHUB_WORKSPACE/deployed/mainnet/state-mate"
+            test -f "$config_dir/mainnet.yaml"
+            test -n "$(find "$config_dir/markets" -type f \( -name '*.yaml' -o -name '*.yml' \) ! -name '*.seed.*' -print -quit)"
+            yarn start "$config_dir"
+          else
+            yarn start "$GITHUB_WORKSPACE/script/config/$CONFIG/state-mate/$STATE_MATE_CONFIG"
+          fi
+
+      - name: check mainnet NAV sources at the fork origin
+        if: env.CONFIG == 'mainnet'
+        env:
+          RPC_URL: *upstream_rpc
+        run: |
+          # External NAV feeds cannot publish during a simulated 72-hour motion.
+          source_block=$(cast rpc --rpc-url http://127.0.0.1:8545 anvil_nodeInfo | jq -er '.forkConfig.forkBlockNumber')
+          FORK_BLOCK="$source_block" forge test --match-path test/fork/NavOracleSources.t.sol
 
       - name: fork suites against the applied state
         run: |
+          if [[ "$CONFIG" == mainnet ]]; then
+            # This suite ran above with its original feed timestamps.
+            export FOUNDRY_NO_MATCH_PATH=test/fork/NavOracleSources.t.sol
+          fi
           make test-fork PREPARE=false RPC_URL=http://127.0.0.1:8545 RUN="$DEPLOYMENT_RUN" FORK_BLOCK=
 
       - name: stop the fork

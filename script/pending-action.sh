@@ -87,7 +87,7 @@ while IFS=$'\t' read -r FROM TO VALUE DATA MOTION DESC; do
     MOTION_ID="$(echo "$TX_JSON" | jq -r --arg t "$MOTION_CREATED_TOPIC" '[.logs[] | select(.topics[0] == $t)] | .[0].topics[1] // empty')"
     [ -n "$MOTION_ID" ] || die "no MotionCreated event in $HASH — motion_calldata set on a transaction that creates no motion"
     MOTION_ID="$(cast to-dec "$MOTION_ID")"
-    DURATION="$(cast call "$TO" 'motionDuration()(uint256)' --rpc-url "$RPC_LOCAL")"
+    DURATION="$(cast call "$TO" 'motionDuration()(uint256)' --rpc-url "$RPC_LOCAL" --json | jq -er '.[0] | tonumber')"
     cast rpc --rpc-url "$RPC_LOCAL" evm_increaseTime "$((DURATION + 1))" >/dev/null
     cast rpc --rpc-url "$RPC_LOCAL" evm_mine >/dev/null
     if ! ENACT_JSON="$(cast send "$TO" 'enactMotion(uint256,bytes)' "$MOTION_ID" "$MOTION" --from "$FROM" --unlocked --rpc-url "$RPC_LOCAL" --json)"; then
