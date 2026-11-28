@@ -4,6 +4,12 @@ Lido Lend is a family of isolated lending markets for established looping trades
 
 The Morpho-style market accounting lives in that core, with the interest-rate model in [`lend-irm`](https://github.com/lidofinance/lend-irm). This repository — Lido Lend Markets — holds everything built on top: the per-market policy and contracts, the specifications, the deployment scripts, and the deployed-address registry.
 
+## Formal Verification
+
+The [formal verification handover](certora/HANDOVER.md) includes the audit-era Certora
+specifications, mutation tests, methodology guide, and two dated reports. The reports
+record historical results; they have not been rerun against the current public source tree.
+
 ## Setup
 
 Install the Foundry version recorded in `.foundryref`, then fetch pinned dependencies.

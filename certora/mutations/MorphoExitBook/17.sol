@@ -1,0 +1,121 @@
+/* ── MUTATION MorphoExitBook #17 ──────────────────────────────
+ * @desc:   Closes a request one unit early, marking it Filled while an asset unit still remains unfilled.
+ * @rules:  meRemainingImpliesOpen
+ * @conf:   certora/confs/MorphoExitBook_LinkedCore/valid_state.conf
+ * @target: src/libs/ExitBookLib.sol
+ * Was:     if (request.assetsRemaining == 0) request.status = ExitStatus.Filled;
+ * Now:     if (request.assetsRemaining <= 1) request.status = ExitStatus.Filled;
+ * ────────────────────────────────────────────────────────────────────*/
+
+// SPDX-License-Identifier: GPL-2.0-or-later
+pragma solidity 0.8.36;
+
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {ExitStatus, Request, PriorityRamp} from "../types/ExitBookTypes.sol";
+
+/// @title ExitBookLib
+/// @author Lido
+/// @notice Append-only request registry. Source-agnostic and storage-only: a book holds one `State` and
+///         drives it via `using ExitBookLib for State`. Requests are never deleted — a fill marks `Filled`,
+///         a cancel `Cancelled`. Lookups go by id (the `requests` mapping) or by owner (the `ownerRequestIds`
+///         index); callers filter closed entries by status.
+library ExitBookLib {
+    // ---
+    // ERRORS
+    // ---
+
+    /// @notice The request does not exist or is not open.
+    error RequestClosed();
+    /// @notice The request is past its `deadline` and can no longer be filled.
+    error RequestExpired();
+    /// @notice The caller is not the request's owner.
+    error NotOwner();
+
+    // ---
+    // STATE
+    // ---
+
+    /// @param nextId Monotonic id counter; the last id issued (ids start at 1).
+    /// @param requests Every request ever created, keyed by id; closed ones linger as stable handles.
+    /// @param ownerRequestIds Per-owner index of the ids that owner opened, in creation order.
+    struct State {
+        uint256 nextId;
+        mapping(uint256 id => Request) requests;
+        mapping(address owner => uint256[]) ownerRequestIds;
+    }
+
+    // ---
+    // MUTATIONS
+    // ---
+
+    /// @notice Append a request and return its id.
+    function add(
+        State storage self,
+        address owner,
+        address receiver,
+        IERC20 asset,
+        uint256 assets,
+        uint256 minFillAssets,
+        uint256 maxShareBurn,
+        PriorityRamp calldata ramp,
+        uint256 deadline
+    ) internal returns (uint256 id) {
+        id = ++self.nextId;
+        self.requests[id] = Request({
+            owner: owner,
+            createdAt: SafeCast.toUint40(block.timestamp),
+            deadline: SafeCast.toUint40(deadline),
+            receiver: receiver,
+            status: ExitStatus.Open,
+            asset: asset,
+            assetsRemaining: SafeCast.toUint128(assets),
+            assetsTotal: SafeCast.toUint128(assets),
+            minFillAssets: SafeCast.toUint128(minFillAssets),
+            maxShareBurn: SafeCast.toUint128(maxShareBurn),
+            startRate: SafeCast.toUint96(ramp.startRate),
+            endRate: SafeCast.toUint96(ramp.endRate),
+            rampStart: SafeCast.toUint32(ramp.rampStart),
+            rampEnd: SafeCast.toUint32(ramp.rampEnd)
+        });
+        self.ownerRequestIds[owner].push(id);
+    }
+
+    /// @notice Debit filled assets, marking `Filled` once fully drained.
+    function recordFill(State storage self, uint256 id, uint256 filledAssets) internal {
+        Request storage request = self.requests[id];
+
+        // Only an open request can be filled — guards against re-closing a cancelled/filled request (a
+        // zero-asset call would otherwise corrupt its status to `Filled`).
+        if (request.status != ExitStatus.Open) revert RequestClosed();
+
+        request.assetsRemaining -= SafeCast.toUint128(filledAssets);
+
+        if (request.assetsRemaining <= 1) request.status = ExitStatus.Filled;
+    }
+
+    /// @notice Cancel `id` on behalf of `caller` (must be the owner). Marks `Cancelled`; nothing to refund.
+    function cancel(State storage self, uint256 id, address caller) internal {
+        Request storage request = self.requests[id];
+
+        if (request.owner != caller) revert NotOwner();
+
+        if (request.status != ExitStatus.Open) revert RequestClosed();
+
+        request.assetsRemaining = 0;
+        request.status = ExitStatus.Cancelled;
+    }
+
+    // ---
+    // READS
+    // ---
+
+    /// @notice Load a request that is open and not past its `deadline`, reverting otherwise.
+    function requireFillable(State storage self, uint256 id) internal view returns (Request storage request) {
+        request = self.requests[id];
+
+        if (request.status != ExitStatus.Open) revert RequestClosed();
+
+        if (block.timestamp > request.deadline) revert RequestExpired();
+    }
+}
